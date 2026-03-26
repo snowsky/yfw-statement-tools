@@ -1,5 +1,4 @@
 from functools import lru_cache
-from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -13,27 +12,12 @@ class Settings(BaseSettings):
 
     # Auth
     secret_key: str = "change-me-in-production"
-    algorithm: str = "HS256"
 
-    # Optional database (file metadata)
-    database_url: str = ""
+    # Downloads
+    download_expiry_minutes: int = 60
+    temp_dir: str = "/tmp/statement-tools"
 
-    # Cloud storage
-    storage_backend: Literal["none", "s3", "azure", "gcs"] = "none"
-    file_retention_days: int = 7
-
-    aws_s3_bucket: str = ""
-    aws_s3_access_key_id: str = ""
-    aws_s3_secret_access_key: str = ""
-    aws_s3_region: str = "us-east-1"
-
-    azure_storage_account_name: str = ""
-    azure_storage_account_key: str = ""
-    azure_storage_container: str = ""
-
-    gcp_bucket_name: str = ""
-    gcp_credentials_json: str = ""
-
+    # Server
     api_port: int = 8000
     cors_origins: list[str] = ["*"]
 

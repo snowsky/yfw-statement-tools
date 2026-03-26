@@ -17,7 +17,7 @@ def register_plugin(app, mcp_registry=None, feature_gate=None):
         "name": "statement-tools",
         "version": "1.0.0",
         "routes": [
-            f"{PLUGIN_PREFIX}/statements",
-            f"{PLUGIN_PREFIX}/statements/merge",
+            f"{PLUGIN_PREFIX}/statements/upload",
+            f"{PLUGIN_PREFIX}/statements/download/{{token}}",
         ],
     }

@@ -1,18 +1,7 @@
-/**
- * UploadStatementsPage — upload bank statement files (CSV or PDF).
- *
- * Three modes:
- *   - "Local CSV"        → parse locally, download merged CSV (text-based CSVs)
- *   - "YFW AI"           → forward to YFW's OCR+AI processor, download CSV
- *                          (works for image-rendered PDFs like Scotiabank)
- *   - "Create in YFW"    → push parsed transactions to YFW External Transactions
- *                          (requires commercial license)
- */
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import type { CSSProperties, DragEvent } from "react";
-import { statementToolsApi, type MergeResponse, type UploadToYFWResponse } from "../api";
-
-type Mode = "csv" | "ai" | "yfw";
+import { statementToolsApi, type BatchJobStatus, type BatchUploadResponse } from "../api";
+import { generateMergedCSV, downloadBlob } from "../utils/csv-export";
 
 const ACCEPTED = ".csv,.pdf";
 const ACCEPT_TYPES = ["text/csv", "application/pdf", "text/plain"];
@@ -28,34 +17,36 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const MODES: { id: Mode; label: string; hint: string }[] = [
-  {
-    id: "csv",
-    label: "Local CSV",
-    hint: "Parse locally and download a merged CSV. Best for text-based CSV exports from your bank.",
-  },
-  {
-    id: "ai",
-    label: "YFW AI",
-    hint: "Forward each file to YFW's OCR + AI processor. Works for image-rendered PDFs (e.g. Scotiabank, TD, RBC e-statements). Only available as a YFW plugin — not in standalone mode.",
-  },
-  {
-    id: "yfw",
-    label: "Create in YFW",
-    hint: "Parse locally and push transactions to YFW's External Transactions for review. Requires commercial license.",
-  },
-];
-
 export function UploadStatementsPage() {
   const [files, setFiles] = useState<File[]>([]);
-  const [mode, setMode] = useState<Mode>("csv");
   const [dragging, setDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [csvResult, setCsvResult] = useState<MergeResponse | null>(null);
-  const [yfwResult, setYfwResult] = useState<UploadToYFWResponse | null>(null);
-  const [aiDone, setAiDone] = useState(false);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [jobStatus, setJobStatus] = useState<BatchJobStatus | null>(null);
   const [error, setError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Poll for job status
+  useEffect(() => {
+    let interval: number | undefined;
+
+    if (activeJobId && !jobStatus?.completed_at && jobStatus?.status !== "failed" && jobStatus?.status !== "completed") {
+      interval = window.setInterval(async () => {
+        try {
+          const status = await statementToolsApi.getJobStatus(activeJobId);
+          setJobStatus(status);
+          
+          if (status.status === "completed" || status.status === "failed" || status.status === "partial_failure") {
+            window.clearInterval(interval);
+          }
+        } catch (e) {
+          console.error("Polling error:", e);
+        }
+      }, 3000);
+    }
+
+    return () => window.clearInterval(interval);
+  }, [activeJobId, jobStatus?.status, jobStatus?.completed_at]);
 
   function addFiles(incoming: FileList | null) {
     if (!incoming) return;
@@ -79,39 +70,28 @@ export function UploadStatementsPage() {
     addFiles(e.dataTransfer.files);
   }
 
-  function switchMode(m: Mode) {
-    setMode(m);
-    setCsvResult(null);
-    setYfwResult(null);
-    setAiDone(false);
-    setError("");
-  }
-
   async function handleUpload() {
     if (files.length === 0) return;
     setUploading(true);
     setError("");
-    setCsvResult(null);
-    setYfwResult(null);
-    setAiDone(false);
+    setJobStatus(null);
+    setActiveJobId(null);
 
     try {
-      if (mode === "csv") {
-        const res = await statementToolsApi.upload(files);
-        setCsvResult(res);
-        setFiles([]);
-      } else if (mode === "ai") {
-        // Process each file individually through YFW AI
-        for (const f of files) {
-          await statementToolsApi.processWithYfw(f);
-        }
-        setAiDone(true);
-        setFiles([]);
-      } else {
-        const res = await statementToolsApi.uploadToYfw(files);
-        setYfwResult(res);
-        setFiles([]);
-      }
+      const res = await statementToolsApi.uploadBatch(files);
+      setActiveJobId(res.job_id);
+      // Initialize status
+      setJobStatus({
+        job_id: res.job_id,
+        status: res.status,
+        processed_files: 0,
+        total_files: files.length,
+        successful_files: 0,
+        failed_files: 0,
+        progress_percentage: 0,
+        files: []
+      });
+      setFiles([]);
     } catch (e: unknown) {
       setError((e as Error).message);
     } finally {
@@ -119,75 +99,52 @@ export function UploadStatementsPage() {
     }
   }
 
-  const canSubmit = files.length > 0 && !uploading;
-  const currentMode = MODES.find((m) => m.id === mode)!;
-
-  function buttonLabel(): string {
-    if (uploading) {
-      if (mode === "csv") return "Parsing…";
-      if (mode === "ai") return "Processing with YFW AI…";
-      return "Uploading to YFW…";
-    }
-    if (files.length === 0) return "Select files above";
-    const n = files.length;
-    const s = n > 1 ? `s` : "";
-    if (mode === "csv") return `Parse & Download (${n} file${s})`;
-    if (mode === "ai") return `Process with YFW AI (${n} file${s})`;
-    return `Create in YFW (${n} file${s})`;
+  function handleDownload() {
+    if (!jobStatus) return;
+    const csvContent = generateMergedCSV(jobStatus.files);
+    downloadBlob(csvContent, `merged-statements-${new Date().toISOString().slice(0, 10)}.csv`, "text/csv");
   }
+
+  const canSubmit = files.length > 0 && !uploading && !activeJobId;
+  const isProcessing = activeJobId && jobStatus && jobStatus.status !== "completed" && jobStatus.status !== "failed";
+  const isDone = jobStatus && (jobStatus.status === "completed" || jobStatus.status === "partial_failure");
 
   return (
     <div style={pageStyle}>
-      {/* Header */}
-      <div style={headerRowStyle}>
-        <div>
-          <h1 style={headingStyle}>Upload Statements</h1>
-          <p style={subtitleStyle}>
-            Upload CSV or PDF bank statements.
-          </p>
-        </div>
-        <a href="/merge" style={navLinkStyle}>← Merge from YFW</a>
-      </div>
-
-      {/* Mode tabs */}
-      <div style={modeRowStyle}>
-        {MODES.map((m) => (
-          <button key={m.id} onClick={() => switchMode(m.id)} style={mode === m.id ? modeTabActive : modeTab}>
-            {m.label}
-          </button>
-        ))}
-      </div>
-      <p style={modeHintStyle}>{currentMode.hint}</p>
+      <h1 style={headingStyle}>Upload Statements</h1>
+      <p style={subtitleStyle}>
+        Asynchronously upload and process bank statements. Results are merged into a single CSV for download.
+      </p>
 
       {/* Drop zone */}
-      <div
-        style={{ ...dropZoneStyle, ...(dragging ? dropZoneActiveStyle : {}) }}
-        onClick={() => inputRef.current?.click()}
-        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={onDrop}
-      >
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          accept={ACCEPTED}
-          style={{ display: "none" }}
-          onChange={(e) => addFiles(e.target.files)}
-        />
-        <div style={dropIconStyle}>↑</div>
-        <div style={{ fontSize: 14, color: "#374151", fontWeight: 500 }}>
-          {dragging ? "Drop files here" : "Click or drag & drop CSV / PDF files"}
-        </div>
-        {mode === "ai" && (
-          <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 4 }}>
-            One file processed at a time — each downloads separately
+      {!activeJobId && (
+        <div
+          style={{ ...dropZoneStyle, ...(dragging ? dropZoneActiveStyle : {}) }}
+          onClick={() => inputRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+        >
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            accept={ACCEPTED}
+            style={{ display: "none" }}
+            onChange={(e) => addFiles(e.target.files)}
+          />
+          <div style={dropIconStyle}>↑</div>
+          <div style={{ fontSize: 14, color: "#374151", fontWeight: 500 }}>
+            {dragging ? "Drop files here" : "Click or drag & drop CSV / PDF files"}
           </div>
-        )}
-      </div>
+          <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 4 }}>
+            Bulk upload supported — monitor progress as AI parses each file
+          </div>
+        </div>
+      )}
 
-      {/* File list */}
-      {files.length > 0 && (
+      {/* File list (pre-upload) */}
+      {!activeJobId && files.length > 0 && (
         <div style={fileListStyle}>
           {files.map((f: File) => (
             <div key={f.name} style={fileRowStyle}>
@@ -202,87 +159,87 @@ export function UploadStatementsPage() {
         </div>
       )}
 
+      {/* Active Job Progress */}
+      {jobStatus && (
+        <div style={jobContainerStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+            <span style={{ fontWeight: 600, fontSize: 14 }}>
+              Job: {jobStatus.job_id.slice(0, 8)}...
+            </span>
+            <span style={{ 
+              fontSize: 12, 
+              padding: "2px 8px", 
+              borderRadius: 12, 
+              background: jobStatus.status === "completed" ? "#dcfce7" : "#fef9c3",
+              color: jobStatus.status === "completed" ? "#166534" : "#854d0e"
+            }}>
+              {jobStatus.status.toUpperCase()}
+            </span>
+          </div>
+
+          <div style={progressBgStyle}>
+            <div style={{ 
+              ...progressFillStyle, 
+              width: `${jobStatus.progress_percentage}%`,
+              background: jobStatus.status === "failed" ? "#ef4444" : "#2563eb"
+            }} />
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 12, color: "#6b7280" }}>
+            <span>{jobStatus.processed_files} of {jobStatus.total_files} files processed</span>
+            <span>{Math.round(jobStatus.progress_percentage)}%</span>
+          </div>
+
+          {/* Individual file status inside the job */}
+          <details style={{ marginTop: 12 }}>
+            <summary style={{ fontSize: 12, cursor: "pointer", color: "#374151" }}>View file details</summary>
+            <div style={{ maxHeight: 200, overflowY: "auto", marginTop: 8, fontSize: 12 }}>
+              {jobStatus.files.map(f => (
+                <div key={f.id} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #f3f4f6" }}>
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{f.filename}</span>
+                  <span style={{ 
+                    color: f.status === "completed" ? "#166534" : (f.status === "failed" ? "#991b1b" : "#6b7280"),
+                    fontWeight: 500
+                  }}>
+                    {f.status}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </details>
+        </div>
+      )}
+
       {/* Actions */}
       <div style={actionsStyle}>
-        <button onClick={handleUpload} disabled={!canSubmit} style={canSubmit ? btnPrimary : btnDisabled}>
-          {buttonLabel()}
-        </button>
-        {files.length > 0 && (
-          <button onClick={() => setFiles([])} style={btnOutline}>Clear all</button>
+        {!activeJobId ? (
+          <>
+            <button onClick={handleUpload} disabled={!canSubmit} style={canSubmit ? btnPrimary : btnDisabled}>
+              {uploading ? "Starting Job..." : `Upload & Process ${files.length > 0 ? `(${files.length} files)` : ""}`}
+            </button>
+            {files.length > 0 && (
+              <button onClick={() => setFiles([])} style={btnOutline}>Clear all</button>
+            )}
+          </>
+        ) : (
+          <>
+            {isDone && (
+              <button onClick={handleDownload} style={btnPrimary}>
+                ⬇ Download Merged CSV
+              </button>
+            )}
+            <button 
+              onClick={() => { setActiveJobId(null); setJobStatus(null); }} 
+              style={btnOutline}
+            >
+              Start New Job
+            </button>
+          </>
         )}
       </div>
 
       {/* Error */}
       {error && <div style={errorBox}>{error}</div>}
-
-      {/* AI result */}
-      {aiDone && (
-        <div style={successBox}>
-          <strong>Download started.</strong>
-          <span style={{ marginLeft: 8, fontSize: 13, color: "#555" }}>
-            YFW AI extracted and saved the transactions.
-          </span>
-        </div>
-      )}
-
-      {/* Local CSV result */}
-      {csvResult && (
-        <div style={successBox}>
-          <strong>{csvResult.message}</strong>
-          {csvResult.transaction_count > 0 && (
-            <span style={{ marginLeft: 8, color: "#555", fontSize: 13 }}>
-              ({csvResult.transaction_count} transactions)
-            </span>
-          )}
-          {csvResult.download_url && (
-            <div style={{ marginTop: 8 }}>
-              <a href={csvResult.download_url} target="_blank" rel="noreferrer" style={linkStyle}>
-                Download merged CSV
-              </a>
-              {csvResult.download_expires_at && (
-                <span style={{ fontSize: 12, color: "#555", marginLeft: 8 }}>
-                  (expires {new Date(csvResult.download_expires_at).toLocaleDateString()})
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* YFW External Transactions result */}
-      {yfwResult && (
-        <div style={yfwResult.success ? successBox : errorBox}>
-          <strong>{yfwResult.message}</strong>
-          <div style={{ marginTop: 6, fontSize: 13 }}>
-            <span style={statPill}>✓ {yfwResult.created_count} created</span>
-            {yfwResult.failed_count > 0 && (
-              <span style={{ ...statPill, background: "#fee2e2", color: "#991b1b" }}>
-                ✕ {yfwResult.failed_count} failed
-              </span>
-            )}
-          </div>
-          {yfwResult.errors.length > 0 && (
-            <details style={{ marginTop: 8 }}>
-              <summary style={{ fontSize: 12, cursor: "pointer", color: "#6b7280" }}>
-                Show errors ({yfwResult.errors.length})
-              </summary>
-              <ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 12, color: "#6b7280" }}>
-                {yfwResult.errors.map((e: string, i: number) => <li key={i}>{e}</li>)}
-              </ul>
-            </details>
-          )}
-        </div>
-      )}
-
-      {/* Format hints */}
-      <div style={hintsStyle}>
-        <strong style={{ fontSize: 13 }}>Which mode to use?</strong>
-        <ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 13, color: "#6b7280" }}>
-          <li><strong>Local CSV</strong> — text-based CSV exports from your bank portal</li>
-          <li><strong>YFW AI</strong> — PDFs (image-rendered like Scotiabank, TD, RBC) — plugin mode only; use bank's CSV export in standalone</li>
-          <li><strong>Create in YFW</strong> — push transactions into YFW for reconciliation (commercial license required)</li>
-        </ul>
-      </div>
     </div>
   );
 }
@@ -290,15 +247,8 @@ export function UploadStatementsPage() {
 // ── Styles ──────────────────────────────────────────────────────────────────
 
 const pageStyle: CSSProperties = { maxWidth: 720, margin: "32px auto", fontFamily: "sans-serif", padding: "0 16px" };
-const headerRowStyle: CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 };
 const headingStyle: CSSProperties = { fontSize: 22, fontWeight: 700, marginBottom: 6 };
-const subtitleStyle: CSSProperties = { color: "#666", fontSize: 14, margin: 0 };
-const navLinkStyle: CSSProperties = { fontSize: 13, color: "#2563eb", textDecoration: "none", whiteSpace: "nowrap", marginTop: 4 };
-
-const modeRowStyle: CSSProperties = { display: "flex", gap: 0, marginBottom: 8, border: "1px solid #d1d5db", borderRadius: 8, overflow: "hidden", width: "fit-content" };
-const modeTab: CSSProperties = { padding: "8px 18px", background: "#fff", color: "#374151", border: "none", borderRight: "1px solid #d1d5db", cursor: "pointer", fontSize: 14, fontWeight: 500 };
-const modeTabActive: CSSProperties = { ...modeTab, background: "#2563eb", color: "#fff" };
-const modeHintStyle: CSSProperties = { fontSize: 12, color: "#6b7280", marginBottom: 16, marginTop: 0, maxWidth: 600 };
+const subtitleStyle: CSSProperties = { color: "#666", fontSize: 14, marginBottom: 20 };
 
 const dropZoneStyle: CSSProperties = {
   border: "2px dashed #d1d5db", borderRadius: 12, padding: "36px 24px",
@@ -312,13 +262,14 @@ const fileRowStyle: CSSProperties = { display: "flex", alignItems: "center", pad
 const fileIconStyle: CSSProperties = { marginRight: 10, fontSize: 16 };
 const removeBtnStyle: CSSProperties = { background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 14, padding: "2px 4px" };
 
+const jobContainerStyle: CSSProperties = { marginTop: 20, padding: 16, border: "1px solid #e5e7eb", borderRadius: 12, background: "#fff" };
+const progressBgStyle: CSSProperties = { height: 8, background: "#e5e7eb", borderRadius: 4, overflow: "hidden" };
+const progressFillStyle: CSSProperties = { height: "100%", transition: "width 0.3s ease", borderRadius: 4 };
+
 const actionsStyle: CSSProperties = { display: "flex", gap: 10, marginTop: 14 };
 const btnPrimary: CSSProperties = { padding: "9px 22px", background: "#2563eb", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 14, fontWeight: 600 };
-const btnDisabled: CSSProperties = { ...btnPrimary, background: "#93c5fd", cursor: "not-allowed" };
+const btnDisabled: CSSProperties = { ...btnPrimary, background: "#e5e7eb", color: "#9ca3af", cursor: "not-allowed" };
 const btnOutline: CSSProperties = { ...btnPrimary, background: "#fff", color: "#374151", border: "1px solid #d1d5db" };
 
 const errorBox: CSSProperties = { background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "12px 16px", color: "#991b1b", marginTop: 14, fontSize: 14 };
-const successBox: CSSProperties = { background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 8, padding: "12px 16px", marginTop: 14, fontSize: 14 };
-const linkStyle: CSSProperties = { color: "#2563eb", fontWeight: 500 };
-const statPill: CSSProperties = { display: "inline-block", padding: "2px 10px", background: "#dcfce7", color: "#166534", borderRadius: 12, fontSize: 12, marginRight: 6, fontWeight: 500 };
-const hintsStyle: CSSProperties = { marginTop: 24, padding: "14px 18px", background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 8 };
+

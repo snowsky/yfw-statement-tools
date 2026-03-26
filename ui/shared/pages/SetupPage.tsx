@@ -36,7 +36,7 @@ export function SetupPage({ onSaved }: Props) {
     <div style={container}>
       <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Statement Tools — Setup</h1>
       <p style={{ color: "#666", marginBottom: 24, fontSize: 14 }}>
-        Connect to your YourFinanceWORKS instance.
+        Connect to your YourFinanceWORKS instance to enable AI-powered statement parsing.
       </p>
 
       <label style={labelStyle}>

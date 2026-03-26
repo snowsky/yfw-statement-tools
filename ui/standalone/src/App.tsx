@@ -2,19 +2,18 @@
  * Standalone app router for statement-tools.
  *
  * Routes:
- *   /        → redirect to /setup or /merge depending on config
+ *   /        → redirect to /setup or /upload depending on config
  *   /setup   → SetupPage (configure API URL + key)
- *   /merge   → MergeStatementsPage
+ *   /upload  → UploadStatementsPage
  */
 import { Navigate, Route, Routes } from "react-router-dom";
-import { MergeStatementsPage } from "@shared/pages/MergeStatementsPage";
-import { SetupPage } from "@shared/pages/SetupPage";
 import { UploadStatementsPage } from "@shared/pages/UploadStatementsPage";
+import { SetupPage } from "@shared/pages/SetupPage";
 import { loadSetupConfig } from "@shared/api";
 
 function Root() {
   const { apiKey } = loadSetupConfig();
-  return <Navigate to={apiKey ? "/merge" : "/setup"} replace />;
+  return <Navigate to={apiKey ? "/upload" : "/setup"} replace />;
 }
 
 export function App() {
@@ -23,9 +22,8 @@ export function App() {
       <Route path="/" element={<Root />} />
       <Route
         path="/setup"
-        element={<SetupPage onSaved={() => (window.location.href = "/merge")} />}
+        element={<SetupPage onSaved={() => (window.location.href = "/upload")} />}
       />
-      <Route path="/merge" element={<MergeStatementsPage />} />
       <Route path="/upload" element={<UploadStatementsPage />} />
     </Routes>
   );
