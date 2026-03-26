@@ -65,7 +65,7 @@ async def check_connection(body: ConnectionCheckRequest):
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(
-                f"{body.yfw_api_url.rstrip('/')}/api/v1/external/me",
+                f"{body.yfw_api_url.rstrip('/')}/api/v1/external/statements/?limit=1",
                 headers={"X-API-Key": body.yfw_api_key},
             )
         if resp.status_code == 401:

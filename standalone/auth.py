@@ -43,7 +43,7 @@ async def get_current_user(
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(
-                f"{settings.yfw_api_url}/api/v1/external/me",
+                f"{settings.yfw_api_url}/api/v1/external/statements/?limit=1",
                 headers={"X-API-Key": key},
                 timeout=10.0,
             )
