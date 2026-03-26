@@ -2,12 +2,17 @@
 Statement-tools router — shared between plugin and standalone modes.
 
 Endpoints:
-  GET  /statements                → list statements (proxied from YFW)
-  POST /statements/merge          → merge selected statements; returns direct
-                                    download stream or cloud storage link
-  GET  /statements/{id}/download  → stream a statement file directly to browser
+  GET  /statements              → list statements from YFW external API
+  POST /statements/merge        → fetch transactions from each selected statement,
+                                  merge locally into a CSV, return download stream
+                                  or cloud storage link
+  GET  /statements/{id}         → get single statement with transactions
 """
 from __future__ import annotations
+
+import csv
+import io
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -16,8 +21,10 @@ from shared.compat import get_current_user
 from shared.schemas.statements import (
     MergeRequest,
     MergeResponse,
+    StatementDetail,
     StatementListResponse,
     StatementSummary,
+    StatementTransaction,
 )
 from shared.services.invoice_api_client import InvoiceAPIClient
 from shared.services.storage import get_storage_backend
@@ -26,33 +33,56 @@ router = APIRouter()
 
 
 def _client(request: Request) -> InvoiceAPIClient:
-    """Build an API client that forwards the caller's Authorization header if present."""
     auth = request.headers.get("Authorization", "")
     extra = {"Authorization": auth} if auth else {}
     return InvoiceAPIClient(extra_headers=extra)
+
+
+def _to_summary(s: dict) -> StatementSummary:
+    return StatementSummary(
+        id=s["id"],
+        account_name=s.get("account_name", s.get("original_filename", f"Statement {s['id']}")),
+        statement_date=s.get("statement_date") or s.get("created_at") or datetime.utcnow().isoformat(),
+        total_transactions=s.get("total_transactions", s.get("extracted_count", 0)),
+    )
 
 
 @router.get("/statements", response_model=StatementListResponse)
 async def list_statements(
     skip: int = 0,
     limit: int = 50,
-    status: str | None = None,
     search: str | None = None,
-    label: str | None = None,
     request: Request = None,  # type: ignore[assignment]
     _user=Depends(get_current_user),
 ):
-    """Return a paginated list of bank statements from YFW."""
     client = _client(request)
     try:
-        data = await client.list_statements(
-            skip=skip, limit=limit, status=status, search=search, label=label
-        )
+        data = await client.list_statements(skip=skip, limit=limit, search=search)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
-    statements = [StatementSummary(**s) for s in data.get("statements", [])]
+    raw = data.get("statements", data if isinstance(data, list) else [])
+    statements = [_to_summary(s) for s in raw]
     return StatementListResponse(statements=statements, total=data.get("total", len(statements)))
+
+
+@router.get("/statements/{statement_id}", response_model=StatementDetail)
+async def get_statement(
+    statement_id: int,
+    request: Request,
+    _user=Depends(get_current_user),
+):
+    client = _client(request)
+    try:
+        data = await client.get_statement(statement_id)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+
+    summary = _to_summary(data)
+    transactions = [
+        StatementTransaction(**t) for t in data.get("transactions", [])
+    ]
+    return StatementDetail(**summary.model_dump(), transactions=transactions)
 
 
 @router.post("/statements/merge", response_model=MergeResponse)
@@ -62,12 +92,10 @@ async def merge_statements(
     _user=Depends(get_current_user),
 ):
     """
-    Merge two or more bank statements.
+    Local merge: fetch each selected statement's transactions from YFW, combine
+    into a single CSV, then either stream directly or upload to cloud storage.
 
-    - Calls YFW's merge API to produce a consolidated statement.
-    - Then downloads the merged file.
-    - If STORAGE_BACKEND=none  → streams the file directly back to the browser.
-    - If STORAGE_BACKEND=s3|…  → uploads to cloud, returns a presigned URL.
+    No JWT required — uses the external API (X-API-Key) to read transactions.
     """
     if len(payload.ids) < 2:
         raise HTTPException(
@@ -77,69 +105,78 @@ async def merge_statements(
 
     client = _client(request)
 
-    # 1. Trigger merge on YFW
-    try:
-        result = await client.merge(payload.ids)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    # 1. Fetch transactions for each selected statement
+    all_rows: list[dict] = []
+    failed: list[int] = []
 
-    merged_id: int = result["id"]
+    for stmt_id in payload.ids:
+        try:
+            data = await client.get_statement(stmt_id)
+            source = data.get("account_name", data.get("original_filename", f"Statement {stmt_id}"))
+            for t in data.get("transactions", []):
+                all_rows.append({
+                    "source_statement": source,
+                    "date": t.get("date", ""),
+                    "description": t.get("description", ""),
+                    "amount": t.get("amount", 0),
+                    "transaction_type": t.get("transaction_type", ""),
+                    "balance": t.get("balance", ""),
+                    "category": t.get("category", ""),
+                })
+        except Exception:
+            failed.append(stmt_id)
 
-    # 2. Download the merged file from YFW
-    try:
-        content, filename, _ct = await client.download_file(merged_id)
-    except Exception as exc:
+    if failed:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Merge succeeded (id={merged_id}) but file download failed: {exc}",
+            detail=f"Could not fetch statements: {failed}",
         )
 
-    # 3. Store or prepare for direct streaming
+    if not all_rows:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Selected statements contain no transactions.",
+        )
+
+    # 2. Sort by date
+    all_rows.sort(key=lambda r: str(r.get("date") or ""))
+
+    # 3. Build CSV
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=["date", "description", "amount", "transaction_type", "balance", "category", "source_statement"],
+    )
+    writer.writeheader()
+    writer.writerows(all_rows)
+    csv_bytes = output.getvalue().encode()
+
+    filename = f"merged-statements-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.csv"
+
+    # 4. Store or stream
     storage = get_storage_backend()
 
     from shared.compat import STANDALONE
+    retention_days = 7
     if STANDALONE:
         from standalone.config import get_settings
         retention_days = get_settings().file_retention_days
-    else:
-        retention_days = 7
 
-    store_result = await storage.store(content, filename, retention_days)
+    store_result = await storage.store(csv_bytes, filename, retention_days)
 
     if store_result is None:
-        # Noop storage: tell the frontend to call /statements/{id}/download
-        return MergeResponse(
-            success=True,
-            message=result.get("message", f"Merged into statement #{merged_id}"),
-            merged_id=merged_id,
-            direct_download_path=f"/statements/{merged_id}/download",
+        # Stateless: stream directly
+        return StreamingResponse(  # type: ignore[return-value]
+            iter([csv_bytes]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
     download_url, expires_at = store_result
     return MergeResponse(
         success=True,
-        message=result.get("message", f"Merged into statement #{merged_id}"),
-        merged_id=merged_id,
+        message=f"Merged {len(payload.ids)} statements ({len(all_rows)} transactions)",
+        transaction_count=len(all_rows),
         download_url=download_url,
         download_expires_at=expires_at,
-    )
-
-
-@router.get("/statements/{statement_id}/download")
-async def download_statement(
-    statement_id: int,
-    request: Request,
-    _user=Depends(get_current_user),
-):
-    """Stream a statement file directly to the browser (used when STORAGE_BACKEND=none)."""
-    client = _client(request)
-    try:
-        content, filename, content_type = await client.download_file(statement_id)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
-
-    return StreamingResponse(
-        iter([content]),
-        media_type=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

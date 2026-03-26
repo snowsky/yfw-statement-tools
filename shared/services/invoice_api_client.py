@@ -1,14 +1,11 @@
 """
-HTTP client for the YourFinanceWORKS bank statement API.
+HTTP client for the YourFinanceWORKS external developer API.
 
-Used by both plugin mode (internal HTTP) and standalone mode (external API key).
+Uses the /api/v1/external/ endpoints which are authenticated via X-API-Key.
+These are read-only endpoints — merge is performed locally in statement-tools.
 
-In plugin mode:   base_url is the internal YFW address (e.g. http://localhost:8000)
-In standalone:    base_url comes from settings.yfw_api_url
-
-Authentication:
-  - Standalone:  X-API-Key header from settings.yfw_api_key
-  - Plugin mode: passes the caller's auth token through (resolved in the router)
+Endpoint base: GET /api/v1/external/statements/
+                GET /api/v1/external/statements/{id}   (includes full transactions)
 """
 from __future__ import annotations
 
@@ -20,7 +17,7 @@ if STANDALONE:
     from standalone.config import get_settings
 
     def _base_url() -> str:
-        return get_settings().yfw_api_url
+        return get_settings().yfw_api_url.rstrip("/")
 
     def _auth_headers() -> dict[str, str]:
         key = get_settings().yfw_api_key
@@ -30,14 +27,15 @@ else:
         return "http://localhost:8000"
 
     def _auth_headers() -> dict[str, str]:
-        # In plugin mode the caller's JWT is forwarded by the router; no key needed here.
+        # In plugin mode the caller's JWT is forwarded by the router.
         return {}
+
+# External API base — API-key authenticated
+_EXT = "/api/v1/external/statements"
 
 
 class InvoiceAPIClient:
-    """Thin async wrapper around the YFW statement API endpoints."""
-
-    BASE = "/api/v1/statements"
+    """Async wrapper for YFW external statement endpoints."""
 
     def __init__(self, extra_headers: dict[str, str] | None = None):
         self._extra = extra_headers or {}
@@ -53,47 +51,32 @@ class InvoiceAPIClient:
         search: str | None = None,
         label: str | None = None,
     ) -> dict:
+        """
+        Returns {statements: [...], total: int}.
+
+        Note: the external API response uses 'account_name' (filename) and
+        'statement_date'; status/labels/card_type are not exposed externally.
+        """
         params: dict = {"skip": skip, "limit": limit}
-        if status:
-            params["status"] = status
+        # External API doesn't support status/label filters — silently ignored
         if search:
             params["search"] = search
-        if label:
-            params["label"] = label
 
         async with httpx.AsyncClient(base_url=_base_url(), timeout=30.0) as client:
-            resp = await client.get(self.BASE, params=params, headers=self._headers())
+            resp = await client.get(_EXT + "/", params=params, headers=self._headers())
             resp.raise_for_status()
-            return resp.json()
 
-    async def merge(self, ids: list[int]) -> dict:
-        """Call YFW's merge endpoint. Returns {success, message, id}."""
-        async with httpx.AsyncClient(base_url=_base_url(), timeout=60.0) as client:
-            resp = await client.post(
-                f"{self.BASE}/merge",
-                json={"ids": ids},
-                headers=self._headers(),
-            )
-            resp.raise_for_status()
-            return resp.json()
+        data = resp.json()
+        # External API may return a plain list or {statements, total}
+        if isinstance(data, list):
+            return {"statements": data, "total": len(data)}
+        return data
 
-    async def download_file(self, statement_id: int) -> tuple[bytes, str, str]:
-        """
-        Download the raw statement file.
-        Returns (content_bytes, filename, content_type).
-        """
-        async with httpx.AsyncClient(base_url=_base_url(), timeout=60.0) as client:
+    async def get_statement(self, statement_id: int) -> dict:
+        """Fetch a single statement including its full transactions list."""
+        async with httpx.AsyncClient(base_url=_base_url(), timeout=30.0) as client:
             resp = await client.get(
-                f"{self.BASE}/{statement_id}/file",
-                headers=self._headers(),
-                params={"inline": "false"},
-                follow_redirects=True,
+                f"{_EXT}/{statement_id}", headers=self._headers()
             )
             resp.raise_for_status()
-
-            cd = resp.headers.get("content-disposition", "")
-            filename = "statement.csv"
-            if 'filename="' in cd:
-                filename = cd.split('filename="')[1].rstrip('"')
-            content_type = resp.headers.get("content-type", "application/octet-stream")
-            return resp.content, filename, content_type
+        return resp.json()

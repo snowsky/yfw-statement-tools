@@ -1,15 +1,16 @@
 /**
- * MergeStatementsPage — select 2+ bank statements and merge them.
+ * MergeStatementsPage — select 2+ bank statements and merge them locally.
  *
- * Behavior after merge:
- *  - STORAGE_BACKEND=none  → triggers a direct file download in the browser
- *  - STORAGE_BACKEND=s3|…  → shows a presigned download link with expiry info
+ * Transactions are fetched from YFW's external API and merged into a single
+ * CSV file on the statement-tools backend. No YFW write access required.
+ *
+ * Result:
+ *  - STORAGE_BACKEND=none  → CSV streams directly to the browser
+ *  - STORAGE_BACKEND=s3|…  → presigned download link with expiry
  */
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { statementToolsApi, type MergeResponse, type StatementSummary } from "../api";
-
-const MERGEABLE_STATUSES = ["uploaded", "processed", "processing"];
 
 export function MergeStatementsPage() {
   const [statements, setStatements] = useState<StatementSummary[]>([]);
@@ -26,22 +27,19 @@ export function MergeStatementsPage() {
   const [mergeResult, setMergeResult] = useState<MergeResponse | null>(null);
   const [mergeError, setMergeError] = useState("");
 
-  // ── Fetch statements ───────────────────────────────────────────────────────
+  // ── Fetch ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     setLoading(true);
     setFetchError("");
     statementToolsApi
       .listStatements({ skip: page * PAGE_SIZE, limit: PAGE_SIZE, search: search || undefined })
-      .then((data) => {
-        setStatements(data.statements);
-        setTotal(data.total);
-      })
+      .then((data) => { setStatements(data.statements); setTotal(data.total); })
       .catch((e: Error) => setFetchError(e.message))
       .finally(() => setLoading(false));
   }, [page, search]);
 
-  // ── Selection helpers ──────────────────────────────────────────────────────
+  // ── Selection ──────────────────────────────────────────────────────────────
 
   function toggle(id: number) {
     setSelectedIds((prev) => {
@@ -52,11 +50,9 @@ export function MergeStatementsPage() {
   }
 
   function toggleAll() {
-    const mergeableIds = statements
-      .filter((s) => MERGEABLE_STATUSES.includes(s.status))
-      .map((s) => s.id);
-    const allSelected = mergeableIds.every((id) => selectedIds.has(id));
-    setSelectedIds(allSelected ? new Set() : new Set(mergeableIds));
+    const all = statements.map((s) => s.id);
+    const allSelected = all.every((id) => selectedIds.has(id));
+    setSelectedIds(allSelected ? new Set() : new Set(all));
   }
 
   // ── Merge ──────────────────────────────────────────────────────────────────
@@ -69,27 +65,16 @@ export function MergeStatementsPage() {
 
     try {
       const result = await statementToolsApi.merge([...selectedIds]);
-      setMergeResult(result);
-      setSelectedIds(new Set());
 
-      // Direct download: create a hidden <a> and click it
-      if (result.direct_download_path) {
-        const a = document.createElement("a");
-        a.href = statementToolsApi.downloadUrl(result.merged_id);
-        a.download = `merged-statement-${result.merged_id}.csv`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+      if (result && typeof result === "object" && "transaction_count" in result) {
+        // Cloud storage result: MergeResponse JSON
+        setMergeResult(result as MergeResponse);
+        setSelectedIds(new Set());
+      } else {
+        // Stateless: the response was a streaming CSV — browser downloaded it
+        setMergeResult({ success: true, message: "Download started.", transaction_count: 0 });
+        setSelectedIds(new Set());
       }
-
-      // Refresh list to show new merged statement
-      const refreshed = await statementToolsApi.listStatements({
-        skip: page * PAGE_SIZE,
-        limit: PAGE_SIZE,
-        search: search || undefined,
-      });
-      setStatements(refreshed.statements);
-      setTotal(refreshed.total);
     } catch (e: unknown) {
       setMergeError((e as Error).message);
     } finally {
@@ -99,19 +84,14 @@ export function MergeStatementsPage() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  const mergeableSelected = [...selectedIds].every((id) =>
-    statements.find((s) => s.id === id && MERGEABLE_STATUSES.includes(s.status))
-  );
-  const canMerge = selectedIds.size >= 2 && mergeableSelected;
-
   return (
     <div style={pageStyle}>
       <h1 style={headingStyle}>Merge Statements</h1>
       <p style={subtitleStyle}>
-        Select two or more statements to merge into a single consolidated file.
+        Select two or more statements. Transactions are merged locally into a single CSV file.
       </p>
 
-      {/* Search + action bar */}
+      {/* Toolbar */}
       <div style={toolbarStyle}>
         <input
           value={search}
@@ -121,10 +101,14 @@ export function MergeStatementsPage() {
         />
         <button
           onClick={handleMerge}
-          disabled={!canMerge || merging}
-          style={canMerge && !merging ? btnPrimary : btnDisabled}
+          disabled={selectedIds.size < 2 || merging}
+          style={selectedIds.size >= 2 && !merging ? btnPrimary : btnDisabled}
         >
-          {merging ? "Merging…" : `Merge ${selectedIds.size > 0 ? `(${selectedIds.size})` : ""}`}
+          {merging
+            ? "Merging…"
+            : selectedIds.size >= 2
+            ? `Merge (${selectedIds.size} selected)`
+            : "Merge"}
         </button>
       </div>
 
@@ -136,10 +120,15 @@ export function MergeStatementsPage() {
       {mergeResult && (
         <div style={successBox}>
           <strong>{mergeResult.message}</strong>
+          {mergeResult.transaction_count > 0 && (
+            <span style={{ marginLeft: 8, color: "#555", fontSize: 13 }}>
+              ({mergeResult.transaction_count} transactions)
+            </span>
+          )}
           {mergeResult.download_url && (
             <div style={{ marginTop: 8 }}>
               <a href={mergeResult.download_url} target="_blank" rel="noreferrer" style={linkStyle}>
-                Download merged file
+                Download merged CSV
               </a>
               {mergeResult.download_expires_at && (
                 <span style={{ fontSize: 12, color: "#555", marginLeft: 8 }}>
@@ -147,11 +136,6 @@ export function MergeStatementsPage() {
                 </span>
               )}
             </div>
-          )}
-          {mergeResult.direct_download_path && (
-            <p style={{ fontSize: 13, marginTop: 6, color: "#555" }}>
-              File download started automatically.
-            </p>
           )}
         </div>
       )}
@@ -168,52 +152,42 @@ export function MergeStatementsPage() {
                   <input type="checkbox" onChange={toggleAll} />
                 </th>
                 <th style={thStyle}>Filename</th>
-                <th style={thStyle}>Status</th>
-                <th style={thStyle}>Type</th>
+                <th style={thStyle}>Date</th>
                 <th style={thStyle}>Transactions</th>
-                <th style={thStyle}>Created</th>
               </tr>
             </thead>
             <tbody>
               {statements.map((s) => {
-                const mergeable = MERGEABLE_STATUSES.includes(s.status);
                 const checked = selectedIds.has(s.id);
                 return (
                   <tr
                     key={s.id}
-                    style={{
-                      ...trStyle,
-                      background: checked ? "#eff6ff" : undefined,
-                      opacity: mergeable ? 1 : 0.45,
-                    }}
-                    onClick={() => mergeable && toggle(s.id)}
+                    style={{ ...trStyle, background: checked ? "#eff6ff" : undefined }}
+                    onClick={() => toggle(s.id)}
                   >
                     <td style={tdStyle}>
                       <input
                         type="checkbox"
                         checked={checked}
-                        disabled={!mergeable}
                         onChange={() => toggle(s.id)}
                         onClick={(e) => e.stopPropagation()}
                       />
                     </td>
-                    <td style={{ ...tdStyle, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {s.original_filename}
+                    <td style={{ ...tdStyle, maxWidth: 340, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {s.account_name}
                     </td>
                     <td style={tdStyle}>
-                      <span style={{ ...badge, ...statusColor(s.status) }}>{s.status}</span>
+                      {new Date(s.statement_date).toLocaleDateString()}
                     </td>
-                    <td style={tdStyle}>{s.card_type ?? "—"}</td>
-                    <td style={{ ...tdStyle, textAlign: "right" }}>{s.extracted_count}</td>
-                    <td style={tdStyle}>
-                      {s.created_at ? new Date(s.created_at).toLocaleDateString() : "—"}
+                    <td style={{ ...tdStyle, textAlign: "right" }}>
+                      {s.total_transactions}
                     </td>
                   </tr>
                 );
               })}
               {statements.length === 0 && (
                 <tr>
-                  <td colSpan={6} style={{ ...tdStyle, textAlign: "center", color: "#888", padding: 32 }}>
+                  <td colSpan={4} style={{ ...tdStyle, textAlign: "center", color: "#888", padding: 32 }}>
                     No statements found.
                   </td>
                 </tr>
@@ -232,11 +206,7 @@ export function MergeStatementsPage() {
           <span style={{ fontSize: 13, color: "#555" }}>
             Page {page + 1} of {Math.ceil(total / PAGE_SIZE)}
           </span>
-          <button
-            onClick={() => setPage((p) => p + 1)}
-            disabled={(page + 1) * PAGE_SIZE >= total}
-            style={btnOutline}
-          >
+          <button onClick={() => setPage((p) => p + 1)} disabled={(page + 1) * PAGE_SIZE >= total} style={btnOutline}>
             Next →
           </button>
         </div>
@@ -245,22 +215,9 @@ export function MergeStatementsPage() {
   );
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-function statusColor(status: string): CSSProperties {
-  const map: Record<string, CSSProperties> = {
-    processed: { background: "#dcfce7", color: "#166534" },
-    uploaded: { background: "#dbeafe", color: "#1e40af" },
-    processing: { background: "#fef9c3", color: "#854d0e" },
-    failed: { background: "#fee2e2", color: "#991b1b" },
-    merged: { background: "#f3f4f6", color: "#374151" },
-  };
-  return map[status] ?? { background: "#f3f4f6", color: "#374151" };
-}
-
 // ── Styles ─────────────────────────────────────────────────────────────────
 
-const pageStyle: CSSProperties = { maxWidth: 900, margin: "32px auto", fontFamily: "sans-serif", padding: "0 16px" };
+const pageStyle: CSSProperties = { maxWidth: 860, margin: "32px auto", fontFamily: "sans-serif", padding: "0 16px" };
 const headingStyle: CSSProperties = { fontSize: 22, fontWeight: 700, marginBottom: 6 };
 const subtitleStyle: CSSProperties = { color: "#666", fontSize: 14, marginBottom: 20 };
 const toolbarStyle: CSSProperties = { display: "flex", gap: 10, marginBottom: 12, alignItems: "center" };
@@ -273,8 +230,7 @@ const successBox: CSSProperties = { background: "#f0fdf4", border: "1px solid #8
 const linkStyle: CSSProperties = { color: "#2563eb", fontWeight: 500 };
 const tableStyle: CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 13 };
 const theadRowStyle: CSSProperties = { background: "#f9fafb" };
-const thStyle: CSSProperties = { padding: "10px 12px", textAlign: "left", fontWeight: 600, borderBottom: "1px solid #e5e7eb", whiteSpace: "nowrap" };
+const thStyle: CSSProperties = { padding: "10px 12px", textAlign: "left", fontWeight: 600, borderBottom: "1px solid #e5e7eb" };
 const trStyle: CSSProperties = { cursor: "pointer", borderBottom: "1px solid #f3f4f6" };
 const tdStyle: CSSProperties = { padding: "10px 12px" };
-const badge: CSSProperties = { display: "inline-block", padding: "2px 8px", borderRadius: 12, fontSize: 11, fontWeight: 600 };
 const paginationStyle: CSSProperties = { display: "flex", gap: 12, alignItems: "center", justifyContent: "center", marginTop: 20 };

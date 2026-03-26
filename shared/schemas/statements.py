@@ -1,8 +1,8 @@
 """
 Pydantic schemas for statement-tools.
 
-These mirror the relevant fields from the YFW bank statement API so the
-plugin works without importing YFW's own schemas directly.
+Field names match the YFW external developer API (ExternalStatementResponse):
+  id, statement_date, account_name, total_transactions, transactions
 """
 from __future__ import annotations
 
@@ -12,16 +12,25 @@ from typing import Optional
 from pydantic import BaseModel
 
 
+class StatementTransaction(BaseModel):
+    id: int
+    date: str
+    description: str
+    amount: float
+    transaction_type: str
+    balance: Optional[float] = None
+    category: Optional[str] = None
+
+
 class StatementSummary(BaseModel):
     id: int
-    original_filename: str
-    status: str                      # uploaded | processing | processed | failed | merged
-    extracted_count: int
-    card_type: Optional[str] = None
-    labels: Optional[list[str]] = None
-    notes: Optional[str] = None
-    created_at: Optional[datetime] = None
-    created_by_username: Optional[str] = None
+    account_name: str          # original_filename in YFW
+    statement_date: datetime
+    total_transactions: int
+
+
+class StatementDetail(StatementSummary):
+    transactions: list[StatementTransaction] = []
 
 
 class StatementListResponse(BaseModel):
@@ -36,9 +45,9 @@ class MergeRequest(BaseModel):
 class MergeResponse(BaseModel):
     success: bool
     message: str
-    merged_id: int
-    # Populated when STORAGE_BACKEND != "none"
+    transaction_count: int
+    # Cloud storage mode
     download_url: Optional[str] = None
     download_expires_at: Optional[datetime] = None
-    # Populated when STORAGE_BACKEND == "none" (direct stream — frontend uses /download endpoint)
-    direct_download_path: Optional[str] = None
+    # Stateless mode — frontend POSTs to /download-merged with the token
+    download_token: Optional[str] = None

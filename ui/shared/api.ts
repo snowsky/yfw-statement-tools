@@ -39,14 +39,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export interface StatementSummary {
   id: number;
-  original_filename: string;
-  status: string;
-  extracted_count: number;
-  card_type?: string | null;
-  labels?: string[] | null;
-  notes?: string | null;
-  created_at?: string | null;
-  created_by_username?: string | null;
+  account_name: string;        // original filename from YFW
+  statement_date: string;
+  total_transactions: number;
 }
 
 export interface StatementListResponse {
@@ -57,10 +52,9 @@ export interface StatementListResponse {
 export interface MergeResponse {
   success: boolean;
   message: string;
-  merged_id: number;
+  transaction_count: number;
   download_url?: string | null;
   download_expires_at?: string | null;
-  direct_download_path?: string | null;
 }
 
 // ── API methods ───────────────────────────────────────────────────────────────
