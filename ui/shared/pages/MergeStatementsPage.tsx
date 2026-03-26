@@ -86,7 +86,12 @@ export function MergeStatementsPage() {
 
   return (
     <div style={pageStyle}>
-      <h1 style={headingStyle}>Merge Statements</h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
+        <h1 style={headingStyle}>Merge Statements</h1>
+        <a href="/upload" style={{ fontSize: 13, color: "#2563eb", textDecoration: "none", marginTop: 4 }}>
+          Upload CSV / PDF →
+        </a>
+      </div>
       <p style={subtitleStyle}>
         Select two or more statements. Transactions are merged locally into a single CSV file.
       </p>

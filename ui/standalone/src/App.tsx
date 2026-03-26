@@ -9,6 +9,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { MergeStatementsPage } from "@shared/pages/MergeStatementsPage";
 import { SetupPage } from "@shared/pages/SetupPage";
+import { UploadStatementsPage } from "@shared/pages/UploadStatementsPage";
 import { loadSetupConfig } from "@shared/api";
 
 function Root() {
@@ -25,6 +26,7 @@ export function App() {
         element={<SetupPage onSaved={() => (window.location.href = "/merge")} />}
       />
       <Route path="/merge" element={<MergeStatementsPage />} />
+      <Route path="/upload" element={<UploadStatementsPage />} />
     </Routes>
   );
 }

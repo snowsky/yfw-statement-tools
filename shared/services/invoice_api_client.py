@@ -37,11 +37,24 @@ _EXT = "/api/v1/external/statements"
 class InvoiceAPIClient:
     """Async wrapper for YFW external statement endpoints."""
 
-    def __init__(self, extra_headers: dict[str, str] | None = None):
+    def __init__(
+        self,
+        extra_headers: dict[str, str] | None = None,
+        yfw_url: str | None = None,
+        api_key: str | None = None,
+    ):
         self._extra = extra_headers or {}
+        self._yfw_url = yfw_url
+        self._api_key = api_key
+
+    def _base(self) -> str:
+        return (self._yfw_url or _base_url()).rstrip("/")
 
     def _headers(self) -> dict[str, str]:
-        return {**_auth_headers(), **self._extra}
+        base = _auth_headers()
+        if self._api_key:
+            base["X-API-Key"] = self._api_key
+        return {**base, **self._extra}
 
     async def list_statements(
         self,
@@ -62,7 +75,7 @@ class InvoiceAPIClient:
         if search:
             params["search"] = search
 
-        async with httpx.AsyncClient(base_url=_base_url(), timeout=30.0) as client:
+        async with httpx.AsyncClient(base_url=self._base(), timeout=30.0) as client:
             resp = await client.get(_EXT + "/", params=params, headers=self._headers())
             resp.raise_for_status()
 
@@ -74,9 +87,25 @@ class InvoiceAPIClient:
 
     async def get_statement(self, statement_id: int) -> dict:
         """Fetch a single statement including its full transactions list."""
-        async with httpx.AsyncClient(base_url=_base_url(), timeout=30.0) as client:
+        async with httpx.AsyncClient(base_url=self._base(), timeout=30.0) as client:
             resp = await client.get(
                 f"{_EXT}/{statement_id}", headers=self._headers()
+            )
+            resp.raise_for_status()
+        return resp.json()
+
+    async def create_external_transaction(self, payload: dict) -> dict:
+        """
+        POST /api/v1/external-transactions/transactions
+
+        Required keys: transaction_type ("income"|"expense"), amount (>0),
+        currency, date (ISO string), description, source_system.
+        """
+        async with httpx.AsyncClient(base_url=self._base(), timeout=30.0) as client:
+            resp = await client.post(
+                "/api/v1/external-transactions/transactions",
+                json=payload,
+                headers=self._headers(),
             )
             resp.raise_for_status()
         return resp.json()

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import httpx
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from standalone.config import Settings, get_settings
@@ -28,6 +28,7 @@ class StandaloneUser:
 
 
 async def get_current_user(
+    request: Request,
     api_key_header: Optional[str] = Depends(_api_key_header),
     bearer: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
     settings: Settings = Depends(get_settings),
@@ -40,17 +41,21 @@ async def get_current_user(
             detail="API key required (X-API-Key header or Authorization: Bearer <key>).",
         )
 
+    # Use X-YFW-URL header (set by frontend from localStorage) if provided,
+    # otherwise fall back to the .env setting.
+    yfw_url = request.headers.get("X-YFW-URL") or settings.yfw_api_url
+
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(
-                f"{settings.yfw_api_url}/api/v1/external/statements/?limit=1",
+                f"{yfw_url.rstrip('/')}/api/v1/external/statements/?limit=1",
                 headers={"X-API-Key": key},
                 timeout=10.0,
             )
         except httpx.RequestError as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Cannot reach YFW at {settings.yfw_api_url}: {exc}",
+                detail=f"Cannot reach YFW at {yfw_url}: {exc}",
             )
 
     if resp.status_code == 401:
@@ -63,10 +68,5 @@ async def get_current_user(
     if not resp.is_success:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"YFW returned {resp.status_code}.")
 
-    data = resp.json()
-    return StandaloneUser(
-        id=data.get("user_id"),
-        email=data.get("email", ""),
-        api_key=key,
-        tenant_id=data.get("tenant_id"),
-    )
+    # The probe endpoint just validates the key — it returns statements, not user info.
+    return StandaloneUser(id=None, email="", api_key=key)

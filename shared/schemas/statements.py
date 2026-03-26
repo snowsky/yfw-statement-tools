@@ -51,3 +51,11 @@ class MergeResponse(BaseModel):
     download_expires_at: Optional[datetime] = None
     # Stateless mode — frontend POSTs to /download-merged with the token
     download_token: Optional[str] = None
+
+
+class UploadToYFWResponse(BaseModel):
+    success: bool
+    message: str
+    created_count: int
+    failed_count: int
+    errors: list[str] = []
