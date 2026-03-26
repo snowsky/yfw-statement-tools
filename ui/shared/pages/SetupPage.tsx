@@ -22,9 +22,9 @@ export function SetupPage({ onSaved }: Props) {
   async function handleTest() {
     setStatus("testing");
     setErrorMsg("");
-    const ok = await testConnection(apiUrl, apiKey);
-    setStatus(ok ? "ok" : "error");
-    if (!ok) setErrorMsg("Connection failed. Check the URL and API key.");
+    const result = await testConnection(apiUrl, apiKey);
+    setStatus(result.ok ? "ok" : "error");
+    if (!result.ok) setErrorMsg(result.error ?? "Connection failed.");
   }
 
   function handleSave() {

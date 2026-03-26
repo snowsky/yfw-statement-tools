@@ -12,8 +12,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from shared.routers import statements_router
 from standalone.config import get_settings
@@ -47,3 +49,31 @@ async def startup():
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "statement-tools"}
+
+
+class ConnectionCheckRequest(BaseModel):
+    yfw_api_url: str
+    yfw_api_key: str
+
+
+@app.post("/api/v1/statement-tools/check-connection")
+async def check_connection(body: ConnectionCheckRequest):
+    """
+    Server-side connectivity check — avoids CORS issues when the browser
+    cannot reach the YFW instance directly.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{body.yfw_api_url.rstrip('/')}/api/v1/external/me",
+                headers={"X-API-Key": body.yfw_api_key},
+            )
+        if resp.status_code == 401:
+            return {"ok": False, "error": "Invalid API key."}
+        if resp.status_code == 402:
+            return {"ok": False, "error": "External API access not enabled on your YFW license."}
+        if not resp.is_success:
+            return {"ok": False, "error": f"YFW returned HTTP {resp.status_code}."}
+        return {"ok": True}
+    except httpx.RequestError as exc:
+        return {"ok": False, "error": f"Cannot reach {body.yfw_api_url}: {exc}"}

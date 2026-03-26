@@ -111,13 +111,20 @@ export function loadSetupConfig(): SetupConfig {
   };
 }
 
-export async function testConnection(apiUrl: string, apiKey: string): Promise<boolean> {
+/** Test connectivity via the standalone backend (avoids browser CORS issues). */
+export async function testConnection(
+  apiUrl: string,
+  apiKey: string
+): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch(`${apiUrl}/api/v1/external/me`, {
-      headers: { "X-API-Key": apiKey },
+    const res = await fetch(`${BASE_URL}/api/v1/statement-tools/check-connection`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ yfw_api_url: apiUrl, yfw_api_key: apiKey }),
     });
-    return res.ok;
-  } catch {
-    return false;
+    if (!res.ok) return { ok: false, error: `Backend returned HTTP ${res.status}` };
+    return res.json();
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
   }
 }
