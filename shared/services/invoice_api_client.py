@@ -4,10 +4,10 @@ HTTP client for the YourFinanceWORKS bank statement API.
 Used by both plugin mode (internal HTTP) and standalone mode (external API key).
 
 In plugin mode:   base_url is the internal YFW address (e.g. http://localhost:8000)
-In standalone:    base_url comes from settings.invoice_api_url
+In standalone:    base_url comes from settings.yfw_api_url
 
 Authentication:
-  - Standalone:  X-API-Key header from settings.invoice_api_key
+  - Standalone:  X-API-Key header from settings.yfw_api_key
   - Plugin mode: passes the caller's auth token through (resolved in the router)
 """
 from __future__ import annotations
@@ -20,10 +20,10 @@ if STANDALONE:
     from standalone.config import get_settings
 
     def _base_url() -> str:
-        return get_settings().invoice_api_url
+        return get_settings().yfw_api_url
 
     def _auth_headers() -> dict[str, str]:
-        key = get_settings().invoice_api_key
+        key = get_settings().yfw_api_key
         return {"X-API-Key": key} if key else {}
 else:
     def _base_url() -> str:

@@ -43,14 +43,14 @@ async def get_current_user(
     async with httpx.AsyncClient() as client:
         try:
             resp = await client.get(
-                f"{settings.invoice_api_url}/api/v1/external/me",
+                f"{settings.yfw_api_url}/api/v1/external/me",
                 headers={"X-API-Key": key},
                 timeout=10.0,
             )
         except httpx.RequestError as exc:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Cannot reach YFW at {settings.invoice_api_url}: {exc}",
+                detail=f"Cannot reach YFW at {settings.yfw_api_url}: {exc}",
             )
 
     if resp.status_code == 401:

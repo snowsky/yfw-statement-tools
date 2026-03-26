@@ -18,8 +18,8 @@ Built from [yfw-plugin-template](https://github.com/snowsky/yfw-plugin-template)
 ```bash
 cp .env.example .env
 # Edit .env:
-#   INVOICE_API_URL=https://your-yfw-instance.com
-#   INVOICE_API_KEY=ak_...
+#   YFW_API_URL=https://your-yfw-instance.com
+#   YFW_API_KEY=ak_...
 
 # Backend
 pip install -r requirements.txt
@@ -59,7 +59,7 @@ git clone https://github.com/your-org/yfw-statement-tools statement-tools
 ## API key setup
 
 1. In YFW: **Settings → API Access → Create Key** _(requires `external_api` license feature)_
-2. Copy the `ak_...` key to your `.env` as `INVOICE_API_KEY`
+2. Copy the `ak_...` key to your `.env` as `YFW_API_KEY`
 
 ## Cloud storage (optional)
 
@@ -89,7 +89,7 @@ shared/          ← all domain logic (DRY — used by plugin + standalone)
     storage.py             ← none / S3 / Azure / GCS abstraction
 
 standalone/      ← standalone-specific infrastructure
-  config.py      ← Settings (INVOICE_API_URL, INVOICE_API_KEY, storage)
+  config.py      ← Settings (YFW_API_URL, YFW_API_KEY, storage)
   auth.py        ← API-key validation against YFW
   main.py        ← FastAPI entry point
 
