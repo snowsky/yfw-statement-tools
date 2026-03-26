@@ -1,521 +1,301 @@
 """
-Statement-tools router — shared between plugin and standalone modes.
+Statement-tools router — upload portal.
 
 Endpoints:
-  GET  /statements              → list statements from YFW external API
-  POST /statements/merge        → fetch transactions from each selected statement,
-                                  merge locally into a CSV, return download stream
-                                  or cloud storage link
-  GET  /statements/{id}         → get single statement with transactions
-  POST /statements/upload       → parse uploaded CSV/PDF files, return merged CSV
+  POST /statements/upload          → forward files to YFW, return merged CSV download link
+  GET  /statements/download/{token} → serve a previously generated CSV (valid 1 hour)
 """
 from __future__ import annotations
 
 import csv
 import io
-from datetime import datetime
+import os
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse
 
-from shared.compat import get_current_user
-from shared.services.statement_parser import parse_csv, parse_pdf
-from shared.schemas.statements import (
-    MergeRequest,
-    MergeResponse,
-    StatementDetail,
-    StatementListResponse,
-    StatementSummary,
-    StatementTransaction,
-    UploadToYFWResponse,
-)
-from shared.services.invoice_api_client import InvoiceAPIClient
-from shared.services.storage import get_storage_backend
+from shared.schemas.statements import UploadResponse, BatchUploadResponse, BatchJobStatus
+from shared.services.invoice_api_client import YFWClient
+from standalone.auth import get_current_user
+from standalone.config import get_settings
 
 router = APIRouter()
 
 
-def _csv_hint(content: bytes, ext: str) -> str:
-    """Return a human-readable hint about what columns were found in a CSV."""
-    try:
-        import csv as _csv, io as _io
-        text = content.decode("utf-8-sig", errors="replace")
-        reader = _csv.reader(_io.StringIO(text))
-        headers = next(reader, [])
-        if headers:
-            return f"Columns found: {', '.join(repr(h) for h in headers[:8])}. Expected: date and amount columns."
-    except Exception:
-        pass
-    return ""
+# ── Temp file management ──────────────────────────────────────────────────────
+
+def _temp_dir() -> Path:
+    settings = get_settings()
+    d = Path(settings.temp_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
-def _client(request: Request) -> InvoiceAPIClient:
-    auth = request.headers.get("Authorization", "")
-    extra = {"Authorization": auth} if auth else {}
-    yfw_url = request.headers.get("X-YFW-URL") or None
-    api_key = request.headers.get("X-API-Key") or None
-    return InvoiceAPIClient(extra_headers=extra, yfw_url=yfw_url, api_key=api_key)
+def _is_expired(filepath: Path, expiry_minutes: int) -> bool:
+    """Check if a file is older than expiry_minutes."""
+    if not filepath.exists():
+        return True
+    mtime = datetime.fromtimestamp(filepath.stat().st_mtime, tz=timezone.utc)
+    return datetime.now(timezone.utc) - mtime > timedelta(minutes=expiry_minutes)
 
 
-def _to_summary(s: dict) -> StatementSummary:
-    return StatementSummary(
-        id=s["id"],
-        account_name=s.get("account_name", s.get("original_filename", f"Statement {s['id']}")),
-        statement_date=s.get("statement_date") or s.get("created_at") or datetime.utcnow().isoformat(),
-        total_transactions=s.get("total_transactions", s.get("extracted_count", 0)),
-    )
+def cleanup_expired_files() -> int:
+    """Remove expired CSV files from the temp directory. Returns count removed."""
+    settings = get_settings()
+    removed = 0
+    for f in _temp_dir().glob("*.csv"):
+        if _is_expired(f, settings.download_expiry_minutes):
+            f.unlink(missing_ok=True)
+            removed += 1
+    return removed
 
 
-@router.get("/statements", response_model=StatementListResponse)
-async def list_statements(
-    skip: int = 0,
-    limit: int = 50,
-    search: str | None = None,
-    request: Request = None,  # type: ignore[assignment]
-    _user=Depends(get_current_user),
-):
-    client = _client(request)
-    try:
-        data = await client.list_statements(skip=skip, limit=limit, search=search)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
-    raw = data.get("statements", data if isinstance(data, list) else [])
-    statements = [_to_summary(s) for s in raw]
-    return StatementListResponse(statements=statements, total=data.get("total", len(statements)))
+def _build_client(request: Request) -> YFWClient:
+    """Build a YFWClient from request headers or server config."""
+    api_key = request.headers.get("X-API-Key") or ""
+    yfw_url = request.headers.get("X-YFW-URL") or ""
+
+    if not api_key or not yfw_url:
+        settings = get_settings()
+        api_key = api_key or settings.yfw_api_key
+        yfw_url = yfw_url or settings.yfw_api_url
+
+    return YFWClient(yfw_url=yfw_url, api_key=api_key)
 
 
-@router.get("/statements/{statement_id}", response_model=StatementDetail)
-async def get_statement(
-    statement_id: int,
-    request: Request,
-    _user=Depends(get_current_user),
-):
-    client = _client(request)
-    try:
-        data = await client.get_statement(statement_id)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
-
-    summary = _to_summary(data)
-    transactions = [
-        StatementTransaction(**t) for t in data.get("transactions", [])
-    ]
-    return StatementDetail(**summary.model_dump(), transactions=transactions)
+ALLOWED_EXTENSIONS = {"csv", "pdf"}
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 
 
-@router.post("/statements/merge", response_model=MergeResponse)
-async def merge_statements(
-    payload: MergeRequest,
-    request: Request,
-    _user=Depends(get_current_user),
-):
-    """
-    Local merge: fetch each selected statement's transactions from YFW, combine
-    into a single CSV, then either stream directly or upload to cloud storage.
-
-    No JWT required — uses the external API (X-API-Key) to read transactions.
-    """
-    if len(payload.ids) < 2:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Select at least 2 statements to merge.",
-        )
-
-    client = _client(request)
-
-    # 1. Fetch transactions for each selected statement
-    all_rows: list[dict] = []
-    failed: list[int] = []
-
-    for stmt_id in payload.ids:
-        try:
-            data = await client.get_statement(stmt_id)
-            source = data.get("account_name", data.get("original_filename", f"Statement {stmt_id}"))
-            for t in data.get("transactions", []):
-                all_rows.append({
-                    "source_statement": source,
-                    "date": t.get("date", ""),
-                    "description": t.get("description", ""),
-                    "amount": t.get("amount", 0),
-                    "transaction_type": t.get("transaction_type", ""),
-                    "balance": t.get("balance", ""),
-                    "category": t.get("category", ""),
-                })
-        except Exception:
-            failed.append(stmt_id)
-
-    if failed:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Could not fetch statements: {failed}",
-        )
-
-    if not all_rows:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Selected statements contain no transactions.",
-        )
-
-    # 2. Sort by date
-    all_rows.sort(key=lambda r: str(r.get("date") or ""))
-
-    # 3. Build CSV
-    output = io.StringIO()
-    writer = csv.DictWriter(
-        output,
-        fieldnames=["date", "description", "amount", "transaction_type", "balance", "category", "source_statement"],
-    )
-    writer.writeheader()
-    writer.writerows(all_rows)
-    csv_bytes = output.getvalue().encode()
-
-    filename = f"merged-statements-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.csv"
-
-    # 4. Store or stream
-    storage = get_storage_backend()
-
-    from shared.compat import STANDALONE
-    retention_days = 7
-    if STANDALONE:
-        from standalone.config import get_settings
-        retention_days = get_settings().file_retention_days
-
-    store_result = await storage.store(csv_bytes, filename, retention_days)
-
-    if store_result is None:
-        # Stateless: stream directly
-        return StreamingResponse(  # type: ignore[return-value]
-            iter([csv_bytes]),
-            media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
-
-    download_url, expires_at = store_result
-    return MergeResponse(
-        success=True,
-        message=f"Merged {len(payload.ids)} statements ({len(all_rows)} transactions)",
-        transaction_count=len(all_rows),
-        download_url=download_url,
-        download_expires_at=expires_at,
-    )
-
-
-@router.post("/statements/process-with-yfw")
-async def process_with_yfw(
-    file: UploadFile = File(...),
-    format: str = "csv",
-    card_type: str = "auto",
-    request: Request = None,  # type: ignore[assignment]
-    _user=Depends(get_current_user),
-):
-    """
-    Forward a single PDF/CSV file to YFW's AI statement processor
-    (POST /api/v1/statements/process).
-
-    YFW uses OCR + LLM to extract transactions — works for image-rendered PDFs
-    that pdfplumber cannot parse.
-
-    Plugin mode:  forwards the caller's JWT Authorization header → works.
-    Standalone:   this endpoint requires JWT (not API key); returns 501.
-    """
-    from shared.compat import STANDALONE
-
-    if STANDALONE:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail=(
-                "YFW AI processing requires a JWT session and is only available "
-                "when statement-tools runs as a YFW plugin. "
-                "In standalone mode, use your bank's CSV export instead of the PDF."
-            ),
-        )
-
-    # Plugin mode: forward the caller's JWT to YFW's internal API
-    yfw_url = "http://localhost:8000"  # same process in plugin mode
-    auth_header = request.headers.get("Authorization", "") if request else ""
-
-    content = await file.read()
-    filename = file.filename or "statement.pdf"
-
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"{yfw_url}/api/v1/statements/process",
-                params={"format": format, "card_type": card_type},
-                files={"file": (filename, content, file.content_type or "application/octet-stream")},
-                headers={"Authorization": auth_header} if auth_header else {},
-            )
-    except httpx.RequestError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Cannot reach YFW: {exc}")
-
-    if resp.status_code == 403:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"YFW denied access: {resp.text[:200]}")
-    if resp.status_code == 402:
-        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="YFW AI processing requires a commercial license or active trial.")
-    if not resp.is_success:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"YFW returned {resp.status_code}: {resp.text[:200]}")
-
-    ct = resp.headers.get("content-type", "text/csv")
-    disposition = resp.headers.get("content-disposition", f'attachment; filename="yfw-{filename}.csv"')
-    return StreamingResponse(
-        iter([resp.content]),
-        media_type=ct,
-        headers={"Content-Disposition": disposition},
-    )
-
-
-@router.post("/statements/parse-debug")
-async def parse_debug(
-    file: UploadFile = File(...),
-    _user=Depends(get_current_user),
-):
-    """
-    Dev helper: returns raw pdfplumber/csv extraction so you can see what
-    the parser sees without attempting transaction mapping.
-    """
-    name = file.filename or ""
-    content = await file.read()
+def _validate_file(upload: UploadFile) -> str:
+    """Validate a file and return its extension."""
+    name = upload.filename or ""
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-    ct = (file.content_type or "").lower()
-
-    if ext == "pdf" or "pdf" in ct:
-        try:
-            import pdfplumber, io as _io
-            result: dict = {"pages": []}
-            with pdfplumber.open(_io.BytesIO(content)) as pdf:
-                for i, page in enumerate(pdf.pages):
-                    tables = page.extract_tables()
-                    text = page.extract_text() or ""
-                    char_count = len(page.chars) if hasattr(page, "chars") else 0
-                    image_count = len(page.images) if hasattr(page, "images") else 0
-                    result["pages"].append({
-                        "page": i + 1,
-                        "text_lines": text.splitlines(),
-                        "char_count": char_count,
-                        "image_count": image_count,
-                        "tables": [
-                            {"rows": t[:6], "total_rows": len(t)}
-                            for t in (tables or [])
-                        ],
-                    })
-            return result
-        except Exception as exc:
-            return {"error": str(exc)}
-    else:
-        # CSV: return first 5 rows and detected columns
-        import csv as _csv, io as _io
-        text = content.decode("utf-8-sig", errors="replace")
-        reader = _csv.reader(_io.StringIO(text))
-        rows = [r for r, _ in zip(reader, range(6))]
-        return {"rows": rows}
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsupported file type: {name}. Only CSV and PDF are accepted.",
+        )
+    return ext
 
 
-@router.post("/statements/upload")
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@router.post("/statements/upload", response_model=UploadResponse)
 async def upload_statements(
     files: list[UploadFile] = File(...),
+    request: Request = None,  # type: ignore[assignment]
     _user=Depends(get_current_user),
 ):
     """
-    Parse one or more uploaded CSV or PDF bank statement files.
-    Returns a merged CSV (all transactions combined, sorted by date).
+    Upload one or more bank statement files (CSV/PDF).
 
-    Accepts: text/csv, application/pdf  (detected by filename extension if
-    Content-Type is missing or generic).
+    Each file is forwarded to YFW's AI statement processor.
+    All extracted transactions are merged into a single CSV.
+    Returns a download link valid for 1 hour.
     """
     if not files:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No files provided.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No files provided.",
+        )
 
-    all_rows: list[dict] = []
+    # Validate all files first
+    for f in files:
+        _validate_file(f)
+
+    client = _build_client(request)
+    settings = get_settings()
+
+    all_transactions: list[dict] = []
     errors: list[str] = []
 
     for upload in files:
-        name = upload.filename or ""
+        name = upload.filename or "unknown"
         content = await upload.read()
 
-        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-        ct = (upload.content_type or "").lower()
+        if len(content) > MAX_FILE_SIZE:
+            errors.append(f"{name}: file exceeds 20 MB limit.")
+            continue
+
+        ct = upload.content_type or "application/octet-stream"
 
         try:
-            if ext == "pdf" or "pdf" in ct:
-                rows = parse_pdf(content)
-            elif ext == "csv" or "csv" in ct or "text/plain" in ct:
-                rows = parse_csv(content)
-            else:
-                # Last-resort: try CSV then PDF
-                rows = parse_csv(content)
-                if not rows:
-                    rows = parse_pdf(content)
+            transactions = await client.process_statement(content, name, ct)
+            for t in transactions:
+                t["source_file"] = name
+            all_transactions.extend(transactions)
         except Exception as exc:
             errors.append(f"{name}: {exc}")
-            continue
 
-        if not rows:
-            # Give a helpful hint about the columns we found vs what's needed
-            hint = _csv_hint(content, ext) if ext != "pdf" and "pdf" not in ct else ""
-            errors.append(
-                f"{name}: no transactions found."
-                + (f" {hint}" if hint else " Ensure the file has date and amount columns.")
-            )
-            continue
-
-        for row in rows:
-            row["source_statement"] = name
-        all_rows.extend(rows)
-
-    if errors and not all_rows:
+    if not all_transactions:
+        detail = "No transactions could be extracted."
+        if errors:
+            detail += " " + "; ".join(errors)
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="; ".join(errors),
+            detail=detail,
         )
 
-    if not all_rows:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="No transactions could be extracted from the uploaded files.",
-        )
+    # Sort by date (best-effort)
+    all_transactions.sort(key=lambda r: str(r.get("date") or ""))
 
-    # Sort by date string (lexicographic — works for ISO and most dd/mm/yyyy formats)
-    all_rows.sort(key=lambda r: str(r.get("date") or ""))
-
+    # Build merged CSV
     output = io.StringIO()
-    writer = csv.DictWriter(
-        output,
-        fieldnames=["date", "description", "amount", "transaction_type", "balance", "category", "source_statement"],
-    )
+    fieldnames = [
+        "date", "description", "amount", "transaction_type",
+        "category", "balance", "source_file",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
-    writer.writerows(all_rows)
-    csv_bytes = output.getvalue().encode()
+    writer.writerows(all_transactions)
+    csv_bytes = output.getvalue().encode("utf-8")
 
-    filename = f"uploaded-statements-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.csv"
+    # Save to temp directory with a UUID token
+    token = uuid.uuid4().hex
+    filename = f"{token}.csv"
+    filepath = _temp_dir() / filename
+    filepath.write_bytes(csv_bytes)
 
-    storage = get_storage_backend()
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.download_expiry_minutes)
 
-    from shared.compat import STANDALONE
-    retention_days = 7
-    if STANDALONE:
-        from standalone.config import get_settings
-        retention_days = get_settings().file_retention_days
+    # Build download URL (relative — frontend prepends base)
+    prefix = "/api/v1/external/statement-tools"
+    download_url = f"{prefix}/statements/download/{token}"
 
-    store_result = await storage.store(csv_bytes, filename, retention_days)
-
-    if store_result is None:
-        return StreamingResponse(  # type: ignore[return-value]
-            iter([csv_bytes]),
-            media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
-
-    download_url, expires_at = store_result
-    return MergeResponse(
+    return UploadResponse(
         success=True,
-        message=f"Parsed {len(files)} file(s) — {len(all_rows)} transactions"
-        + (f" ({len(errors)} file(s) had errors)" if errors else ""),
-        transaction_count=len(all_rows),
+        message=f"Processed {len(files)} file(s) — {len(all_transactions)} transactions extracted.",
+        transaction_count=len(all_transactions),
+        file_count=len(files),
         download_url=download_url,
-        download_expires_at=expires_at,
+        expires_at=expires_at,
+        errors=errors,
     )
 
 
-def _to_yfw_type(tx_type: str) -> str:
-    """Map Credit/Debit → income/expense for YFW external-transactions API."""
-    t = tx_type.strip().lower()
-    if t in ("credit", "income", "deposit"):
-        return "income"
-    return "expense"
-
-
-@router.post("/statements/upload-to-yfw", response_model=UploadToYFWResponse)
-async def upload_statements_to_yfw(
+@router.post("/batch/upload", response_model=BatchUploadResponse)
+async def upload_batch(
     files: list[UploadFile] = File(...),
-    source_system: str = "statement-tools",
     request: Request = None,  # type: ignore[assignment]
     _user=Depends(get_current_user),
 ):
     """
-    Parse uploaded CSV/PDF files locally, then push each transaction to
-    YFW's external-transactions API (POST /api/v1/external-transactions/transactions).
-
-    The records will appear in YFW under External Transactions for review.
-
-    Requires the API key to have external_transactions write permission in YFW.
+    Upload one or more files for asynchronous batch processing.
+    Returns a YFW job ID that can be polled for progress.
     """
     if not files:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No files provided.")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No files provided.",
+        )
 
-    # 1. Parse files
-    all_rows: list[dict] = []
-    parse_errors: list[str] = []
+    # Validate all files
+    for f in files:
+        _validate_file(f)
 
+    client = _build_client(request)
+    
+    # Prepare files for the client
+    file_tuples = []
     for upload in files:
-        name = upload.filename or ""
         content = await upload.read()
-        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-        ct = (upload.content_type or "").lower()
+        if len(content) > MAX_FILE_SIZE:
+             raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"File {upload.filename} exceeds 20 MB limit."
+            )
+        file_tuples.append((
+            upload.filename or "unknown",
+            content,
+            upload.content_type or "application/octet-stream"
+        ))
 
-        try:
-            if ext == "pdf" or "pdf" in ct:
-                rows = parse_pdf(content)
-            else:
-                rows = parse_csv(content)
-                if not rows:
-                    rows = parse_pdf(content)
-        except Exception as exc:
-            parse_errors.append(f"{name}: {exc}")
-            continue
+    try:
+        yfw_resp = await client.upload_batch(file_tuples)
+        return BatchUploadResponse(
+            success=True,
+            job_id=yfw_resp.get("job_id", ""),
+            status=yfw_resp.get("status", "pending"),
+            message="Batch job created successfully."
+        )
+    except Exception as exc:
+        logger.error(f"Batch upload failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc)
+        )
 
-        if not rows:
-            parse_errors.append(f"{name}: no transactions found.")
-            continue
 
-        for row in rows:
-            row["_source_file"] = name
-        all_rows.extend(rows)
+@router.get("/batch/jobs/{job_id}", response_model=BatchJobStatus)
+async def get_batch_job_status(
+    job_id: str,
+    request: Request = None,  # type: ignore[assignment]
+    _user=Depends(get_current_user),
+):
+    """
+    Get the status and results of a batch processing job.
+    """
+    client = _build_client(request)
+    try:
+        yfw_resp = await client.get_job_status(job_id)
+        
+        # Map YFW response to our BatchJobStatus schema
+        # We need to extract progress info from the 'progress' dict in YFW response
+        progress = yfw_resp.get("progress", {})
+        
+        return BatchJobStatus(
+            job_id=yfw_resp.get("job_id", ""),
+            status=yfw_resp.get("status", "unknown"),
+            processed_files=progress.get("processed", 0),
+            total_files=progress.get("total", 0),
+            successful_files=progress.get("successful", 0),
+            failed_files=progress.get("failed", 0),
+            progress_percentage=progress.get("percentage", 0.0),
+            files=yfw_resp.get("files", []),
+            completed_at=yfw_resp.get("timestamps", {}).get("completed_at")
+        )
+    except Exception as exc:
+        logger.error(f"Failed to get job status for {job_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc)
+        )
 
-    if not all_rows:
-        detail = "No transactions could be extracted."
-        if parse_errors:
-            detail += " " + "; ".join(parse_errors)
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
 
-    # 2. Push to YFW
-    client = _client(request)
-    created = 0
-    failed = 0
-    push_errors: list[str] = []
+@router.get("/statements/download/{token}")
+async def download_csv(token: str):
+    """
+    Download a previously generated merged CSV.
 
-    for row in all_rows:
-        raw_amount = float(row.get("amount") or 0)
-        tx_type = _to_yfw_type(row.get("transaction_type") or ("income" if raw_amount >= 0 else "expense"))
-        amount = abs(raw_amount) if raw_amount != 0 else 0.01  # API requires > 0
+    The token is a UUID returned by the upload endpoint.
+    Links expire after the configured retention period (default: 1 hour).
+    """
+    # Sanitize token — must be a valid hex UUID
+    try:
+        uuid.UUID(token)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid download token.")
 
-        payload = {
-            "transaction_type": tx_type,
-            "amount": str(amount),
-            "currency": "USD",
-            "date": row.get("date", datetime.utcnow().isoformat()),
-            "description": row.get("description") or "(no description)",
-            "source_system": source_system,
-        }
-        if row.get("category"):
-            payload["category"] = row["category"]
+    settings = get_settings()
+    filepath = _temp_dir() / f"{token}.csv"
 
-        try:
-            await client.create_external_transaction(payload)
-            created += 1
-        except Exception as exc:
-            failed += 1
-            if len(push_errors) < 10:  # cap error list
-                push_errors.append(f"{row.get('_source_file', '')} [{row.get('date', '')}] {row.get('description', '')[:40]}: {exc}")
+    if not filepath.exists() or _is_expired(filepath, settings.download_expiry_minutes):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Download link has expired. Please upload again.",
+        )
 
-    all_errors = parse_errors + push_errors
-    return UploadToYFWResponse(
-        success=created > 0,
-        message=f"Created {created} transaction(s) in YFW"
-        + (f"; {failed} failed" if failed else "")
-        + (f" ({len(parse_errors)} file(s) skipped)" if parse_errors else ""),
-        created_count=created,
-        failed_count=failed,
-        errors=all_errors,
+    download_name = f"statements-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.csv"
+
+    return FileResponse(
+        path=str(filepath),
+        media_type="text/csv",
+        filename=download_name,
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
     )

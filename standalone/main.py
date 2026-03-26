@@ -7,7 +7,10 @@ Run with:
 Or via Docker Compose:
     docker-compose up api
 """
+import asyncio
+import logging
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -19,14 +22,56 @@ from pydantic import BaseModel
 
 from shared.routers import statements_router
 from standalone.config import get_settings
-from standalone.database import create_tables
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
 settings = get_settings()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup / shutdown lifecycle."""
+    # Startup: ensure temp dir exists
+    Path(settings.temp_dir).mkdir(parents=True, exist_ok=True)
+    logger.info("Statement-tools started (temp_dir=%s)", settings.temp_dir)
+
+    # Start background cleanup task
+    task = asyncio.create_task(_cleanup_loop())
+
+    yield
+
+    # Shutdown
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def _cleanup_loop():
+    """Periodically remove expired download files."""
+    from shared.routers.statements import cleanup_expired_files
+
+    while True:
+        await asyncio.sleep(300)  # every 5 minutes
+        try:
+            removed = cleanup_expired_files()
+            if removed:
+                logger.info("Cleaned up %d expired download(s)", removed)
+        except Exception as exc:
+            logger.warning("Cleanup error: %s", exc)
+
+
 app = FastAPI(
-    title="Statement Tools — Standalone",
-    description="Merge, download, and manage YFW bank statements.",
+    title="Statement Tools",
+    description="Upload bank statements, get parsed CSV via YFW.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -37,13 +82,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-PLUGIN_PREFIX = "/api/v1/statement-tools"
+PLUGIN_PREFIX = "/api/v1/external/statement-tools"
 app.include_router(statements_router, prefix=PLUGIN_PREFIX, tags=["statement-tools"])
-
-
-@app.on_event("startup")
-async def startup():
-    create_tables()
 
 
 @app.get("/health")
@@ -56,7 +96,7 @@ class ConnectionCheckRequest(BaseModel):
     yfw_api_key: str
 
 
-@app.post("/api/v1/statement-tools/check-connection")
+@app.post(f"{PLUGIN_PREFIX}/check-connection")
 async def check_connection(body: ConnectionCheckRequest):
     """
     Server-side connectivity check — avoids CORS issues when the browser
@@ -64,10 +104,13 @@ async def check_connection(body: ConnectionCheckRequest):
     """
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
+            url = f"{body.yfw_api_url.rstrip('/')}/api/v1/external/statements/health"
+            logger.info("Checking YFW health at: %s", url)
             resp = await client.get(
-                f"{body.yfw_api_url.rstrip('/')}/api/v1/external/statements/?limit=1",
+                url,
                 headers={"X-API-Key": body.yfw_api_key},
             )
+            logger.info("YFW health check response: status=%d, body=%s", resp.status_code, resp.text[:100])
         if resp.status_code == 401:
             return {"ok": False, "error": "Invalid API key."}
         if resp.status_code == 402:
