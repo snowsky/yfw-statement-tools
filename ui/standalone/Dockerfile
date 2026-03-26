@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY ui/standalone/package.json ui/standalone/package-lock.json* ./
 
-RUN npm ci
+RUN npm install
 
 # Copy full ui/ so @shared alias resolves correctly
 COPY ui/ ./ui/
