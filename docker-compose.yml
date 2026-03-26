@@ -1,0 +1,33 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: standalone/Dockerfile
+    env_file: [.env]
+    ports:
+      - "${API_PORT:-8000}:8000"
+
+  ui:
+    build:
+      context: .
+      dockerfile: ui/standalone/Dockerfile
+    ports:
+      - "${UI_PORT:-3000}:80"
+    depends_on: [api]
+
+# Uncomment to persist file metadata (requires DATABASE_URL in .env)
+# db:
+#   image: postgres:16-alpine
+#   environment:
+#     POSTGRES_USER: ${POSTGRES_USER:-sttools}
+#     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sttools}
+#     POSTGRES_DB: ${POSTGRES_DB:-sttools}
+#   volumes:
+#     - sttools_db_data:/var/lib/postgresql/data
+#   healthcheck:
+#     test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sttools}"]
+#     interval: 5s
+#     retries: 5
+
+# volumes:
+#   sttools_db_data:

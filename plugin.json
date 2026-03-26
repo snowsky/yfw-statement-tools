@@ -1,0 +1,27 @@
+{
+  "name": "statement-tools",
+  "version": "1.0.0",
+  "description": "Purpose-built workflows for YourFinanceWORKS bank statements — merge, download, review",
+  "author": "YourFinanceWORKS",
+  "license": "AGPLv3",
+  "license_tier": "agpl",
+  "database_tables": [],
+  "api_routes": [
+    {
+      "path": "/api/v1/statement-tools/statements",
+      "methods": ["GET"],
+      "description": "List bank statements (proxied from YFW)"
+    },
+    {
+      "path": "/api/v1/statement-tools/statements/merge",
+      "methods": ["POST"],
+      "description": "Merge selected statements; returns file download or cloud storage link"
+    },
+    {
+      "path": "/api/v1/statement-tools/statements/{id}/download",
+      "methods": ["GET"],
+      "description": "Download a statement file"
+    }
+  ],
+  "features": ["merge_statements"]
+}
