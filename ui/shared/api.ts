@@ -2,13 +2,13 @@
  * Statement-tools API client.
  *
  * All calls go to the statement-tools backend (VITE_API_URL in standalone,
- * same origin in plugin mode). The backend proxies to YFW internally.
+ * same origin in plugin mode). The backend forwards files to YFW for parsing.
  */
 
 const BASE_URL =
   (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_API_URL) || "";
 
-const PREFIX = "/api/v1/statement-tools";
+const PREFIX = "/api/v1/external/statement-tools";
 
 // ── Auth header ──────────────────────────────────────────────────────────────
 
@@ -21,137 +21,58 @@ function authHeaders(): Record<string, string> {
   };
 }
 
-// ── Core fetch wrapper ───────────────────────────────────────────────────────
-
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-      ...(options.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(detail?.detail ?? `HTTP ${res.status}`);
-  }
-  return res.json() as Promise<T>;
-}
-
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export interface StatementSummary {
-  id: number;
-  account_name: string;        // original filename from YFW
-  statement_date: string;
-  total_transactions: number;
-}
-
-export interface StatementListResponse {
-  statements: StatementSummary[];
-  total: number;
-}
-
-export interface MergeResponse {
+export interface UploadResponse {
   success: boolean;
   message: string;
   transaction_count: number;
-  download_url?: string | null;
-  download_expires_at?: string | null;
-}
-
-export interface UploadToYFWResponse {
-  success: boolean;
-  message: string;
-  created_count: number;
-  failed_count: number;
+  file_count: number;
+  download_url: string;
+  expires_at: string;
   errors: string[];
 }
 
-// ── API methods ───────────────────────────────────────────────────────────────
+export interface BatchUploadResponse {
+  success: boolean;
+  job_id: string;
+  status: string;
+  message?: string;
+}
+
+export interface BatchFileStatus {
+  id: number;
+  filename: string;
+  status: string;
+  error_message?: string;
+  extracted_data?: any;
+}
+
+export interface BatchJobStatus {
+  job_id: string;
+  status: string;
+  processed_files: number;
+  total_files: number;
+  successful_files: number;
+  failed_files: number;
+  progress_percentage: number;
+  files: BatchFileStatus[];
+  completed_at?: string;
+}
+
+// ── API methods ──────────────────────────────────────────────────────────────
 
 export const statementToolsApi = {
-  listStatements: (params?: {
-    skip?: number;
-    limit?: number;
-    status?: string;
-    search?: string;
-    label?: string;
-  }) => {
-    const qs = new URLSearchParams();
-    if (params?.skip != null) qs.set("skip", String(params.skip));
-    if (params?.limit != null) qs.set("limit", String(params.limit));
-    if (params?.status) qs.set("status", params.status);
-    if (params?.search) qs.set("search", params.search);
-    if (params?.label) qs.set("label", params.label);
-    return request<StatementListResponse>(`${PREFIX}/statements?${qs}`);
-  },
-
-  merge: async (ids: number[]): Promise<MergeResponse> => {
-    const res = await fetch(`${BASE_URL}${PREFIX}/statements/merge`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ ids }),
-    });
-    if (!res.ok) {
-      const detail = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(detail?.detail ?? `HTTP ${res.status}`);
-    }
-    const ct = res.headers.get("Content-Type") ?? "";
-    if (ct.includes("text/csv")) {
-      // Stateless mode: trigger browser download
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      const disposition = res.headers.get("Content-Disposition") ?? "";
-      const match = disposition.match(/filename="([^"]+)"/);
-      a.href = url;
-      a.download = match?.[1] ?? "merged-statements.csv";
-      a.click();
-      URL.revokeObjectURL(url);
-      return { success: true, message: "Download started.", transaction_count: 0 };
-    }
-    return res.json() as Promise<MergeResponse>;
-  },
-
-  downloadUrl: (statementId: number) =>
-    `${BASE_URL}${PREFIX}/statements/${statementId}/download`,
-
-  upload: async (files: File[]): Promise<MergeResponse> => {
+  /**
+   * Upload one or more files. Backend forwards each to YFW for AI parsing,
+   * merges transactions, returns a download link valid for 1 hour.
+   * @deprecated Use uploadBatch for larger files or multiple files.
+   */
+  upload: async (files: File[]): Promise<UploadResponse> => {
     const form = new FormData();
     for (const f of files) form.append("files", f);
 
     const res = await fetch(`${BASE_URL}${PREFIX}/statements/upload`, {
-      method: "POST",
-      headers: authHeaders(),  // no Content-Type — browser sets multipart boundary
-      body: form,
-    });
-    if (!res.ok) {
-      const detail = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(detail?.detail ?? `HTTP ${res.status}`);
-    }
-    const ct = res.headers.get("Content-Type") ?? "";
-    if (ct.includes("text/csv")) {
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      const disposition = res.headers.get("Content-Disposition") ?? "";
-      const match = disposition.match(/filename="([^"]+)"/);
-      a.href = url;
-      a.download = match?.[1] ?? "uploaded-statements.csv";
-      a.click();
-      URL.revokeObjectURL(url);
-      return { success: true, message: "Download started.", transaction_count: 0 };
-    }
-    return res.json() as Promise<MergeResponse>;
-  },
-
-  processWithYfw: async (file: File): Promise<void> => {
-    const form = new FormData();
-    form.append("file", file);
-
-    const res = await fetch(`${BASE_URL}${PREFIX}/statements/process-with-yfw`, {
       method: "POST",
       headers: authHeaders(),
       body: form,
@@ -160,44 +81,45 @@ export const statementToolsApi = {
       const detail = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(detail?.detail ?? `HTTP ${res.status}`);
     }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const disposition = res.headers.get("Content-Disposition") ?? "";
-    const match = disposition.match(/filename="([^"]+)"/);
-    a.href = url;
-    a.download = match?.[1] ?? `${file.name.replace(/\.pdf$/i, "")}-transactions.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    return res.json() as Promise<UploadResponse>;
   },
 
-  uploadToYfw: async (files: File[], sourceSystem = "statement-tools"): Promise<UploadToYFWResponse> => {
+  /**
+   * Upload multiple files for a background batch processing job.
+   */
+  uploadBatch: async (files: File[]): Promise<BatchUploadResponse> => {
     const form = new FormData();
     for (const f of files) form.append("files", f);
-    form.append("source_system", sourceSystem);
 
-    const res = await fetch(
-      `${BASE_URL}${PREFIX}/statements/upload-to-yfw`,
-      { method: "POST", headers: authHeaders(), body: form }
-    );
+    const res = await fetch(`${BASE_URL}${PREFIX}/batch/upload`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: form,
+    });
     if (!res.ok) {
       const detail = await res.json().catch(() => ({ detail: res.statusText }));
-      if (res.status === 402) {
-        throw new Error(
-          "The External Transactions feature is not enabled on your YFW instance. " +
-          "It requires a commercial license. During a trial period it is available automatically."
-        );
-      }
-      if (res.status === 403) {
-        throw new Error(
-          "Your API key does not have External Transactions write permission. " +
-          "Check your API client settings in YFW."
-        );
-      }
       throw new Error(detail?.detail ?? `HTTP ${res.status}`);
     }
-    return res.json() as Promise<UploadToYFWResponse>;
+    return res.json() as Promise<BatchUploadResponse>;
   },
+
+  /**
+   * Get the current status of a batch job.
+   */
+  getJobStatus: async (jobId: string): Promise<BatchJobStatus> => {
+    const res = await fetch(`${BASE_URL}${PREFIX}/batch/jobs/${jobId}`, {
+      method: "GET",
+      headers: authHeaders(),
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(detail?.detail ?? `HTTP ${res.status}`);
+    }
+    return res.json() as Promise<BatchJobStatus>;
+  },
+
+  /** Build the full download URL for a given relative path. */
+  downloadUrl: (relativePath: string) => `${BASE_URL}${relativePath}`,
 };
 
 // ── Setup helpers (standalone only) ──────────────────────────────────────────
@@ -225,7 +147,7 @@ export async function testConnection(
   apiKey: string
 ): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch(`${BASE_URL}/api/v1/statement-tools/check-connection`, {
+    const res = await fetch(`${BASE_URL}${PREFIX}/check-connection`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ yfw_api_url: apiUrl, yfw_api_key: apiKey }),
