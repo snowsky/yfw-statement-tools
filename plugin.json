@@ -8,14 +8,14 @@
   "database_tables": [],
   "api_routes": [
     {
-      "path": "/api/v1/external/statement-tools/statements/upload",
+      "path": "/api/v1/statement-tools/statements/upload",
       "methods": [
         "POST"
       ],
       "description": "Upload multiple bank statements (PDF/CSV) for AI parsing"
     },
     {
-      "path": "/api/v1/external/statement-tools/statements/download/{token}",
+      "path": "/api/v1/statement-tools/statements/download/{token}",
       "methods": [
         "GET"
       ],

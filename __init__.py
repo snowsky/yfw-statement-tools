@@ -1,23 +1,17 @@
 """
-YourFinanceWORKS plugin entry point for statement-tools.
+Backward-compatible plugin entry point.
 
-When installed as a plugin (cloned into api/plugins/statement-tools/),
-the YFW plugin loader calls register_plugin(app) to mount routes.
+When installed as a YFW plugin the repo root lands at api/plugins/statement_tools/.
+Adding that directory to sys.path makes `plugin` and `shared` importable as
+top-level packages in both standalone and plugin-mode contexts.
 """
-from shared.routers import statements_router
+import sys
+from pathlib import Path
 
-PLUGIN_PREFIX = "/api/v1/statement-tools"
+_here = Path(__file__).parent
+if str(_here) not in sys.path:
+    sys.path.insert(0, str(_here))
 
+from plugin.api import register_plugin  # noqa: E402
 
-def register_plugin(app, mcp_registry=None, feature_gate=None):
-    """Called by YourFinanceWORKS plugin loader at startup."""
-    app.include_router(statements_router, prefix=PLUGIN_PREFIX, tags=["statement-tools"])
-
-    return {
-        "name": "statement-tools",
-        "version": "1.0.0",
-        "routes": [
-            f"{PLUGIN_PREFIX}/statements/upload",
-            f"{PLUGIN_PREFIX}/statements/download/{{token}}",
-        ],
-    }
+__all__ = ["register_plugin"]

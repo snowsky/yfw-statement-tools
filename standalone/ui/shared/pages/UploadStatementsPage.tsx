@@ -194,7 +194,7 @@ export function UploadStatementsPage() {
           <details style={{ marginTop: 12 }}>
             <summary style={{ fontSize: 12, cursor: "pointer", color: "#374151" }}>View file details</summary>
             <div style={{ maxHeight: 200, overflowY: "auto", marginTop: 8, fontSize: 12 }}>
-              {jobStatus.files.map(f => (
+              {jobStatus.files.map((f: BatchJobStatus["files"][number]) => (
                 <div key={f.id} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid #f3f4f6" }}>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{f.filename}</span>
                   <span style={{ 
@@ -272,4 +272,3 @@ const btnDisabled: CSSProperties = { ...btnPrimary, background: "#e5e7eb", color
 const btnOutline: CSSProperties = { ...btnPrimary, background: "#fff", color: "#374151", border: "1px solid #d1d5db" };
 
 const errorBox: CSSProperties = { background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, padding: "12px 16px", color: "#991b1b", marginTop: 14, fontSize: 14 };
-

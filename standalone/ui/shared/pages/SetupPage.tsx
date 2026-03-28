@@ -6,7 +6,8 @@
  */
 import { useState } from "react";
 import type { CSSProperties } from "react";
-import { loadSetupConfig, saveSetupConfig, testConnection } from "../api";
+import { testConnection } from "../api";
+import { loadSetupConfig, saveSetupConfig } from "../setup";
 
 interface Props {
   onSaved?: () => void;

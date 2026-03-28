@@ -4,10 +4,15 @@ import path from "path";
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    "import.meta.env.VITE_STATEMENT_TOOLS_PREFIX": JSON.stringify(
+      "/api/v1/external/statement-tools"
+    ),
+    "import.meta.env.VITE_USE_SETUP": JSON.stringify("true"),
+  },
   resolve: {
     alias: {
-      // @shared → ../../ui/shared  (shared pages without symlinks)
-      "@shared": path.resolve(__dirname, "../../ui/shared"),
+      "@shared": path.resolve(__dirname, "./shared"),
     },
   },
   server: {

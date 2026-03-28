@@ -25,7 +25,7 @@ Open http://localhost:5173 → Setup page → enter YFW URL + API key → Upload
 ### Docker Compose
 
 ```bash
-docker-compose up
+docker compose -f standalone/docker/compose.yml up
 ```
 
 API → http://localhost:8000 · UI → http://localhost:3000
@@ -39,23 +39,31 @@ API → http://localhost:8000 · UI → http://localhost:3000
 
 ```
 shared/
-  routers/       ← FastAPI endpoints (upload & download)
+  app.py         ← shared FastAPI app factory
+  auth.py        ← shared auth / API key validation
+  config.py      ← shared settings
+  routers/       ← FastAPI route factory
   schemas/       ← Pydantic models
   services/
     invoice_api_client.py  ← HTTP client for YFW API
 
-standalone/      ← Standalone infra
-  config.py      ← Settings (YFW URL/Key, download expiry)
-  auth.py        ← API-key validation cache
-  main.py        ← FastAPI entry point & cleanup task
+plugin/          ← Plugin deployment entry points
+  __init__.py    ← register_plugin(app)
+  main.py        ← local FastAPI wrapper for plugin mode
+
+standalone/
+  main.py        ← standalone FastAPI entry point
+  docker/        ← compose + Docker assets for standalone deployment
 
 ui/
   shared/        ← Shared React components
-    api.ts       ← Upload & setup helpers
+    api.ts       ← Upload & batch helpers
+    setup.ts     ← standalone local storage helpers
     pages/
       SetupPage.tsx
       UploadStatementsPage.tsx
-  standalone/    ← Vite SPA
+  standalone/    ← Standalone Vite SPA
+  plugin/        ← Plugin Vite SPA
 ```
 
 ## License

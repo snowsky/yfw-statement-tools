@@ -4,7 +4,7 @@ Pydantic schemas for statement-tools upload portal.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel
 
@@ -31,7 +31,7 @@ class BatchFileStatus(BaseModel):
     filename: str
     status: str
     error_message: Optional[str] = None
-    extracted_data: Optional[dict] = None
+    extracted_data: Optional[dict[str, Any]] = None
 
 
 class BatchJobStatus(BaseModel):

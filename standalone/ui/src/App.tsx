@@ -9,7 +9,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { UploadStatementsPage } from "@shared/pages/UploadStatementsPage";
 import { SetupPage } from "@shared/pages/SetupPage";
-import { loadSetupConfig } from "@shared/api";
+import { loadSetupConfig } from "@shared/setup";
 
 function Root() {
   const { apiKey } = loadSetupConfig();

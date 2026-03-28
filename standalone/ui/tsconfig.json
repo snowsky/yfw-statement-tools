@@ -13,9 +13,9 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "paths": {
-      "@shared/*": ["../../ui/shared/*"]
+      "@shared/*": ["./shared/*"]
     }
   },
-  "include": ["src", "../../ui/shared"],
+  "include": ["src", "./shared"],
   "exclude": ["node_modules"]
 }

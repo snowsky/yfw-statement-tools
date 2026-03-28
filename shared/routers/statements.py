@@ -9,21 +9,22 @@ from __future__ import annotations
 
 import csv
 import io
-import os
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Awaitable, Callable
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
 from shared.schemas.statements import UploadResponse, BatchUploadResponse, BatchJobStatus
+from shared.config import get_settings
 from shared.services.invoice_api_client import YFWClient
-from standalone.auth import get_current_user
-from standalone.config import get_settings
 
-router = APIRouter()
+logger = logging.getLogger(__name__)
 
+AuthDependency = Callable[..., Awaitable[object]]
 
 # ── Temp file management ──────────────────────────────────────────────────────
 
@@ -86,216 +87,228 @@ def _validate_file(upload: UploadFile) -> str:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-@router.post("/statements/upload", response_model=UploadResponse)
-async def upload_statements(
-    files: list[UploadFile] = File(...),
-    request: Request = None,  # type: ignore[assignment]
-    _user=Depends(get_current_user),
-):
-    """
-    Upload one or more bank statement files (CSV/PDF).
+def create_router(api_prefix: str, auth_dependency: AuthDependency | None = None) -> APIRouter:
+    router = APIRouter()
+    route_dependencies = [Depends(auth_dependency)] if auth_dependency else []
 
-    Each file is forwarded to YFW's AI statement processor.
-    All extracted transactions are merged into a single CSV.
-    Returns a download link valid for 1 hour.
-    """
-    if not files:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="No files provided.",
+    @router.post(
+        "/statements/upload",
+        response_model=UploadResponse,
+        dependencies=route_dependencies,
+    )
+    async def upload_statements(
+        files: list[UploadFile] = File(...),
+        request: Request = None,  # type: ignore[assignment]
+    ):
+        """
+        Upload one or more bank statement files (CSV/PDF).
+
+        Each file is forwarded to YFW's AI statement processor.
+        All extracted transactions are merged into a single CSV.
+        Returns a download link valid for 1 hour.
+        """
+        if not files:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No files provided.",
+            )
+
+        for upload in files:
+            _validate_file(upload)
+
+        client = _build_client(request)
+        settings = get_settings()
+        all_transactions: list[dict] = []
+        errors: list[str] = []
+
+        for upload in files:
+            name = upload.filename or "unknown"
+            content = await upload.read()
+            if len(content) > MAX_FILE_SIZE:
+                errors.append(f"{name}: file exceeds 20 MB limit.")
+                continue
+
+            try:
+                transactions = await client.process_statement(
+                    content,
+                    name,
+                    upload.content_type or "application/octet-stream",
+                )
+                for transaction in transactions:
+                    transaction["source_file"] = name
+                all_transactions.extend(transactions)
+            except Exception as exc:
+                errors.append(f"{name}: {exc}")
+
+        if not all_transactions:
+            detail = "No transactions could be extracted."
+            if errors:
+                detail += " " + "; ".join(errors)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=detail,
+            )
+
+        all_transactions.sort(key=lambda record: str(record.get("date") or ""))
+        csv_bytes = _build_csv(all_transactions)
+
+        token = uuid.uuid4().hex
+        filepath = _temp_dir() / f"{token}.csv"
+        filepath.write_bytes(csv_bytes)
+
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            minutes=settings.download_expiry_minutes,
+        )
+        return UploadResponse(
+            success=True,
+            message=(
+                f"Processed {len(files)} file(s) — "
+                f"{len(all_transactions)} transactions extracted."
+            ),
+            transaction_count=len(all_transactions),
+            file_count=len(files),
+            download_url=f"{api_prefix}/statements/download/{token}",
+            expires_at=expires_at,
+            errors=errors,
         )
 
-    # Validate all files first
-    for f in files:
-        _validate_file(f)
+    @router.post(
+        "/batch/upload",
+        response_model=BatchUploadResponse,
+        dependencies=route_dependencies,
+    )
+    async def upload_batch(
+        files: list[UploadFile] = File(...),
+        request: Request = None,  # type: ignore[assignment]
+    ):
+        """
+        Upload one or more files for asynchronous batch processing.
+        Returns a YFW job ID that can be polled for progress.
+        """
+        if not files:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No files provided.",
+            )
 
-    client = _build_client(request)
-    settings = get_settings()
+        for upload in files:
+            _validate_file(upload)
 
-    all_transactions: list[dict] = []
-    errors: list[str] = []
-
-    for upload in files:
-        name = upload.filename or "unknown"
-        content = await upload.read()
-
-        if len(content) > MAX_FILE_SIZE:
-            errors.append(f"{name}: file exceeds 20 MB limit.")
-            continue
-
-        ct = upload.content_type or "application/octet-stream"
+        client = _build_client(request)
+        file_tuples: list[tuple[str, bytes, str]] = []
+        for upload in files:
+            content = await upload.read()
+            if len(content) > MAX_FILE_SIZE:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"File {upload.filename} exceeds 20 MB limit.",
+                )
+            file_tuples.append(
+                (
+                    upload.filename or "unknown",
+                    content,
+                    upload.content_type or "application/octet-stream",
+                )
+            )
 
         try:
-            transactions = await client.process_statement(content, name, ct)
-            for t in transactions:
-                t["source_file"] = name
-            all_transactions.extend(transactions)
+            yfw_resp = await client.upload_batch(file_tuples)
+            return BatchUploadResponse(
+                success=True,
+                job_id=yfw_resp.get("job_id", ""),
+                status=yfw_resp.get("status", "pending"),
+                message="Batch job created successfully.",
+            )
         except Exception as exc:
-            errors.append(f"{name}: {exc}")
+            logger.error("Batch upload failed: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(exc),
+            ) from exc
 
-    if not all_transactions:
-        detail = "No transactions could be extracted."
-        if errors:
-            detail += " " + "; ".join(errors)
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=detail,
+    @router.get(
+        "/batch/jobs/{job_id}",
+        response_model=BatchJobStatus,
+        dependencies=route_dependencies,
+    )
+    async def get_batch_job_status(
+        job_id: str,
+        request: Request = None,  # type: ignore[assignment]
+    ):
+        """
+        Get the status and results of a batch processing job.
+        """
+        client = _build_client(request)
+        try:
+            yfw_resp = await client.get_job_status(job_id)
+            progress = yfw_resp.get("progress", {})
+            return BatchJobStatus(
+                job_id=yfw_resp.get("job_id", ""),
+                status=yfw_resp.get("status", "unknown"),
+                processed_files=progress.get("processed", 0),
+                total_files=progress.get("total", 0),
+                successful_files=progress.get("successful", 0),
+                failed_files=progress.get("failed", 0),
+                progress_percentage=progress.get("percentage", 0.0),
+                files=yfw_resp.get("files", []),
+                completed_at=yfw_resp.get("timestamps", {}).get("completed_at"),
+            )
+        except Exception as exc:
+            logger.error("Failed to get job status for %s: %s", job_id, exc)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(exc),
+            ) from exc
+
+    @router.get("/statements/download/{token}")
+    async def download_csv(token: str):
+        """
+        Download a previously generated merged CSV.
+
+        The token is a UUID returned by the upload endpoint.
+        Links expire after the configured retention period (default: 1 hour).
+        """
+        try:
+            uuid.UUID(token)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid download token.",
+            ) from exc
+
+        settings = get_settings()
+        filepath = _temp_dir() / f"{token}.csv"
+        if not filepath.exists() or _is_expired(filepath, settings.download_expiry_minutes):
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="Download link has expired. Please upload again.",
+            )
+
+        download_name = (
+            f"statements-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.csv"
+        )
+        return FileResponse(
+            path=str(filepath),
+            media_type="text/csv",
+            filename=download_name,
+            headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
         )
 
-    # Sort by date (best-effort)
-    all_transactions.sort(key=lambda r: str(r.get("date") or ""))
+    return router
 
-    # Build merged CSV
+
+def _build_csv(all_transactions: list[dict]) -> bytes:
     output = io.StringIO()
     fieldnames = [
-        "date", "description", "amount", "transaction_type",
-        "category", "balance", "source_file",
+        "date",
+        "description",
+        "amount",
+        "transaction_type",
+        "category",
+        "balance",
+        "source_file",
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(all_transactions)
-    csv_bytes = output.getvalue().encode("utf-8")
-
-    # Save to temp directory with a UUID token
-    token = uuid.uuid4().hex
-    filename = f"{token}.csv"
-    filepath = _temp_dir() / filename
-    filepath.write_bytes(csv_bytes)
-
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.download_expiry_minutes)
-
-    # Build download URL (relative — frontend prepends base)
-    prefix = "/api/v1/external/statement-tools"
-    download_url = f"{prefix}/statements/download/{token}"
-
-    return UploadResponse(
-        success=True,
-        message=f"Processed {len(files)} file(s) — {len(all_transactions)} transactions extracted.",
-        transaction_count=len(all_transactions),
-        file_count=len(files),
-        download_url=download_url,
-        expires_at=expires_at,
-        errors=errors,
-    )
-
-
-@router.post("/batch/upload", response_model=BatchUploadResponse)
-async def upload_batch(
-    files: list[UploadFile] = File(...),
-    request: Request = None,  # type: ignore[assignment]
-    _user=Depends(get_current_user),
-):
-    """
-    Upload one or more files for asynchronous batch processing.
-    Returns a YFW job ID that can be polled for progress.
-    """
-    if not files:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="No files provided.",
-        )
-
-    # Validate all files
-    for f in files:
-        _validate_file(f)
-
-    client = _build_client(request)
-    
-    # Prepare files for the client
-    file_tuples = []
-    for upload in files:
-        content = await upload.read()
-        if len(content) > MAX_FILE_SIZE:
-             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"File {upload.filename} exceeds 20 MB limit."
-            )
-        file_tuples.append((
-            upload.filename or "unknown",
-            content,
-            upload.content_type or "application/octet-stream"
-        ))
-
-    try:
-        yfw_resp = await client.upload_batch(file_tuples)
-        return BatchUploadResponse(
-            success=True,
-            job_id=yfw_resp.get("job_id", ""),
-            status=yfw_resp.get("status", "pending"),
-            message="Batch job created successfully."
-        )
-    except Exception as exc:
-        logger.error(f"Batch upload failed: {exc}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc)
-        )
-
-
-@router.get("/batch/jobs/{job_id}", response_model=BatchJobStatus)
-async def get_batch_job_status(
-    job_id: str,
-    request: Request = None,  # type: ignore[assignment]
-    _user=Depends(get_current_user),
-):
-    """
-    Get the status and results of a batch processing job.
-    """
-    client = _build_client(request)
-    try:
-        yfw_resp = await client.get_job_status(job_id)
-        
-        # Map YFW response to our BatchJobStatus schema
-        # We need to extract progress info from the 'progress' dict in YFW response
-        progress = yfw_resp.get("progress", {})
-        
-        return BatchJobStatus(
-            job_id=yfw_resp.get("job_id", ""),
-            status=yfw_resp.get("status", "unknown"),
-            processed_files=progress.get("processed", 0),
-            total_files=progress.get("total", 0),
-            successful_files=progress.get("successful", 0),
-            failed_files=progress.get("failed", 0),
-            progress_percentage=progress.get("percentage", 0.0),
-            files=yfw_resp.get("files", []),
-            completed_at=yfw_resp.get("timestamps", {}).get("completed_at")
-        )
-    except Exception as exc:
-        logger.error(f"Failed to get job status for {job_id}: {exc}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc)
-        )
-
-
-@router.get("/statements/download/{token}")
-async def download_csv(token: str):
-    """
-    Download a previously generated merged CSV.
-
-    The token is a UUID returned by the upload endpoint.
-    Links expire after the configured retention period (default: 1 hour).
-    """
-    # Sanitize token — must be a valid hex UUID
-    try:
-        uuid.UUID(token)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid download token.")
-
-    settings = get_settings()
-    filepath = _temp_dir() / f"{token}.csv"
-
-    if not filepath.exists() or _is_expired(filepath, settings.download_expiry_minutes):
-        raise HTTPException(
-            status_code=status.HTTP_410_GONE,
-            detail="Download link has expired. Please upload again.",
-        )
-
-    download_name = f"statements-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.csv"
-
-    return FileResponse(
-        path=str(filepath),
-        media_type="text/csv",
-        filename=download_name,
-        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
-    )
+    return output.getvalue().encode("utf-8")

@@ -1,3 +1,3 @@
-from .statements import router as statements_router
+from .statements import cleanup_expired_files, create_router
 
-__all__ = ["statements_router"]
+__all__ = ["cleanup_expired_files", "create_router"]
