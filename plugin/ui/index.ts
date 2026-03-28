@@ -2,7 +2,7 @@
  * Statement Tools — YourFinanceWORKS plugin entry point.
  *
  * Consumed by App.tsx via:
- *   import.meta.glob("./plugins/*/index.ts", { eager: true })
+ *   import.meta.glob("./plugins/[*]/index.ts", { eager: true })
  *
  * The component is a lazy-loaded default export from StatementToolsPage.tsx.
  * All API calls target /api/v1/statement-tools/* on the same YFW origin —
