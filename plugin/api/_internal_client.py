@@ -97,13 +97,30 @@ class InternalYFWClient:
     ) -> dict[str, Any]:
         """Call BatchProcessingService directly — no API key needed."""
         from commercial.batch_processing.service import BatchProcessingService
-        from core.models.database import get_db as _get_db, get_tenant_context
+        from core.models.database import get_db as _get_db, get_tenant_context, get_master_db
+        from core.models.api_models import APIClient
 
         tenant_id = get_tenant_context()
         db = None
         try:
             db_gen = _get_db()
             db = next(db_gen)
+
+            # batch_processing_jobs requires a non-null api_client_id.
+            # Look up the tenant's first active API client.
+            master_gen = get_master_db()
+            master_db = next(master_gen)
+            api_client = (
+                master_db.query(APIClient)
+                .filter(APIClient.tenant_id == tenant_id, APIClient.is_active == True)
+                .first()
+            )
+            if not api_client:
+                raise RuntimeError(
+                    "No active API client found for this tenant. "
+                    "Please create one in Settings > API Keys."
+                )
+            api_client_id = api_client.client_id
 
             service = BatchProcessingService(db)
 
@@ -120,7 +137,7 @@ class InternalYFWClient:
                 files=file_infos,
                 tenant_id=tenant_id,
                 user_id=1,
-                api_client_id=None,
+                api_client_id=api_client_id,
                 export_destination_id=None,
                 document_types=[document_type] if document_type else None,
                 card_type="auto",
