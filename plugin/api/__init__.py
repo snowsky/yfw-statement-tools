@@ -5,6 +5,7 @@ When running as a plugin inside the YFW app, statement processing
 is handled directly via the internal service — no external API key needed.
 """
 from shared.routers.statements import create_router
+from ._internal_client import InternalYFWClient
 
 PLUGIN_PREFIX = "/api/v1/statement-tools"
 
@@ -16,10 +17,6 @@ def _make_internal_client_factory():
     The internal client calls the core processing service directly
     instead of going through the external HTTP API (no API key needed).
     """
-    # Import at factory creation time (during registration) while
-    # the plugin's directory is still on sys.path.
-    from plugin.api._internal_client import InternalYFWClient
-
     def factory(request):
         db_factory = None
         try:
@@ -47,10 +44,7 @@ def register_plugin(app, mcp_registry=None, feature_gate=None):
         auth_dep = None
 
     # Use internal processing client (no API key needed)
-    try:
-        client_factory = _make_internal_client_factory()
-    except Exception:
-        client_factory = None
+    client_factory = _make_internal_client_factory()
 
     app.include_router(
         create_router(
