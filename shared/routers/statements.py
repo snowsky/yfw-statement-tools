@@ -87,9 +87,18 @@ def _validate_file(upload: UploadFile) -> str:
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
-def create_router(api_prefix: str, auth_dependency: AuthDependency | None = None) -> APIRouter:
+def create_router(
+    api_prefix: str,
+    auth_dependency: AuthDependency | None = None,
+    client_factory: Callable[..., "YFWClient"] | None = None,
+) -> APIRouter:
     router = APIRouter()
     route_dependencies = [Depends(auth_dependency)] if auth_dependency else []
+
+    def _resolve_client(request: Request) -> YFWClient:
+        if client_factory is not None:
+            return client_factory(request)
+        return _build_client(request)
 
     @router.post(
         "/statements/upload",
@@ -116,7 +125,7 @@ def create_router(api_prefix: str, auth_dependency: AuthDependency | None = None
         for upload in files:
             _validate_file(upload)
 
-        client = _build_client(request)
+        client = _resolve_client(request)
         settings = get_settings()
         all_transactions: list[dict] = []
         errors: list[str] = []
@@ -194,7 +203,7 @@ def create_router(api_prefix: str, auth_dependency: AuthDependency | None = None
         for upload in files:
             _validate_file(upload)
 
-        client = _build_client(request)
+        client = _resolve_client(request)
         file_tuples: list[tuple[str, bytes, str]] = []
         for upload in files:
             content = await upload.read()
@@ -238,7 +247,7 @@ def create_router(api_prefix: str, auth_dependency: AuthDependency | None = None
         """
         Get the status and results of a batch processing job.
         """
-        client = _build_client(request)
+        client = _resolve_client(request)
         try:
             yfw_resp = await client.get_job_status(job_id)
             progress = yfw_resp.get("progress", {})
