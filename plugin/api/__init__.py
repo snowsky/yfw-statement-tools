@@ -16,9 +16,11 @@ def _make_internal_client_factory():
     The internal client calls the core processing service directly
     instead of going through the external HTTP API (no API key needed).
     """
-    def factory(request):
-        from plugin.api._internal_client import InternalYFWClient
+    # Import at factory creation time (during registration) while
+    # the plugin's directory is still on sys.path.
+    from plugin.api._internal_client import InternalYFWClient
 
+    def factory(request):
         db_factory = None
         try:
             from core.models.database import get_tenant_context
