@@ -6,7 +6,7 @@
   "license": "AGPLv3",
   "license_tier": "agpl",
   "database_tables": [],
-  "permitted_core_tables": ["export_destination_configs", "batch_processing_jobs"],
+  "permitted_core_tables": ["export_destination_configs", "batch_processing_jobs", "batch_file_processing"],
   "api_routes": [
     {
       "path": "/api/v1/statement-tools/statements/upload",
