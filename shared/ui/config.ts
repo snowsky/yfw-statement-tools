@@ -4,7 +4,7 @@ export const BASE_URL =
 export const API_PREFIX =
   (typeof import.meta !== "undefined" &&
     (import.meta as any).env?.VITE_STATEMENT_TOOLS_PREFIX) ||
-  "/api/v1/external/statement-tools";
+  "/api/v1/statement-tools";
 
 export const USE_STANDALONE_SETUP =
   (typeof import.meta !== "undefined" &&

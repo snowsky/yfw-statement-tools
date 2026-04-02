@@ -9,6 +9,7 @@ RUN npm install
 
 WORKDIR /app
 COPY standalone/ui/ ./standalone/ui/
+COPY shared/ui/ ./standalone/ui/shared/
 
 WORKDIR /app/standalone/ui
 RUN npm run build
