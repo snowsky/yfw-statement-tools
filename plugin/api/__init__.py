@@ -4,7 +4,10 @@ Plugin entry points for YourFinanceWORKS deployment.
 When running as a plugin inside the YFW app, statement processing
 is handled directly via the internal service — no external API key needed.
 """
-from shared.routers.statements import create_router
+try:
+    from ...shared.routers.statements import create_router
+except (ImportError, ValueError):
+    from shared.routers.statements import create_router
 from ._internal_client import InternalYFWClient
 
 PLUGIN_PREFIX = "/api/v1/statement-tools"

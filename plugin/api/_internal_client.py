@@ -12,6 +12,7 @@ import tempfile
 import uuid
 from typing import Any
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,6 +60,7 @@ class InternalYFWClient:
                 try:
                     from core.models.models_per_tenant import AIConfig as AIConfigModel
 
+                    # ai_configs is declared in permitted_core_tables — no bypass needed
                     ai_row = (
                         db.query(AIConfigModel)
                         .filter(AIConfigModel.is_active == True, AIConfigModel.tested == True)
@@ -106,8 +108,8 @@ class InternalYFWClient:
             db_gen = _get_db()
             db = next(db_gen)
 
-            # batch_processing_jobs requires a non-null api_client_id.
-            # Look up the tenant's first active API client.
+            # APIClient lives in the master DB — the isolation interceptor is only
+            # attached to tenant engines, so no bypass needed here.
             master_gen = get_master_db()
             master_db = next(master_gen)
             api_client = (
@@ -133,6 +135,7 @@ class InternalYFWClient:
                     "content_type": content_type,
                 })
 
+            # Tables accessed by these methods are all declared in permitted_core_tables.
             batch_job = await service.create_batch_job(
                 files=file_infos,
                 tenant_id=tenant_id,
@@ -175,6 +178,7 @@ class InternalYFWClient:
             db_gen = _get_db()
             db = next(db_gen)
             service = BatchProcessingService(db)
+            # Tables accessed are all declared in permitted_core_tables.
             job_status = service.get_job_status(job_id, tenant_id)
             if not job_status:
                 raise RuntimeError(f"Job {job_id} not found")
