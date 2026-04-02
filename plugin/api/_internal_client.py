@@ -12,7 +12,6 @@ import tempfile
 import uuid
 from typing import Any
 
-from core.utils.plugin_context import bypass_plugin_isolation
 
 logger = logging.getLogger(__name__)
 
@@ -61,14 +60,13 @@ class InternalYFWClient:
                 try:
                     from core.models.models_per_tenant import AIConfig as AIConfigModel
 
-                    # AIConfig is a core table — bypass isolation for this query
-                    with bypass_plugin_isolation():
-                        ai_row = (
-                            db.query(AIConfigModel)
-                            .filter(AIConfigModel.is_active == True, AIConfigModel.tested == True)
-                            .order_by(AIConfigModel.is_default.desc())
-                            .first()
-                        )
+                    # ai_configs is declared in permitted_core_tables — no bypass needed
+                    ai_row = (
+                        db.query(AIConfigModel)
+                        .filter(AIConfigModel.is_active == True, AIConfigModel.tested == True)
+                        .order_by(AIConfigModel.is_default.desc())
+                        .first()
+                    )
                     if ai_row:
                         ai_config = {
                             "provider_name": ai_row.provider_name,
@@ -80,11 +78,9 @@ class InternalYFWClient:
                     logger.warning("Could not load AI config: %s", exc)
 
             try:
-                # process_bank_pdf_with_llm is core code — bypass isolation
-                with bypass_plugin_isolation():
-                    transactions = process_bank_pdf_with_llm(
-                        tmp_path, ai_config, db, card_type="auto"
-                    )
+                transactions = process_bank_pdf_with_llm(
+                    tmp_path, ai_config, db, card_type="auto"
+                )
             except BankLLMUnavailableError:
                 raise RuntimeError("AI processing service temporarily unavailable.")
 
@@ -112,17 +108,15 @@ class InternalYFWClient:
             db_gen = _get_db()
             db = next(db_gen)
 
-            # Look up the tenant's first active API client.
-            # APIClient lives in the master DB (not tenant DB) so no isolation issue,
-            # but we bypass anyway to be consistent and future-proof.
-            with bypass_plugin_isolation():
-                master_gen = get_master_db()
-                master_db = next(master_gen)
-                api_client = (
-                    master_db.query(APIClient)
-                    .filter(APIClient.tenant_id == tenant_id, APIClient.is_active == True)
-                    .first()
-                )
+            # APIClient lives in the master DB — the isolation interceptor is only
+            # attached to tenant engines, so no bypass needed here.
+            master_gen = get_master_db()
+            master_db = next(master_gen)
+            api_client = (
+                master_db.query(APIClient)
+                .filter(APIClient.tenant_id == tenant_id, APIClient.is_active == True)
+                .first()
+            )
             if not api_client:
                 raise RuntimeError(
                     "No active API client found for this tenant. "
@@ -141,24 +135,22 @@ class InternalYFWClient:
                     "content_type": content_type,
                 })
 
-            # BatchProcessingService is trusted core code — bypass isolation
-            # so it can freely access export_destination_configs, users, etc.
-            with bypass_plugin_isolation():
-                batch_job = await service.create_batch_job(
-                    files=file_infos,
-                    tenant_id=tenant_id,
-                    user_id=1,
-                    api_client_id=api_client_id,
-                    export_destination_id=None,
-                    document_types=[document_type] if document_type else None,
-                    card_type="auto",
-                )
+            # Tables accessed by these methods are all declared in permitted_core_tables.
+            batch_job = await service.create_batch_job(
+                files=file_infos,
+                tenant_id=tenant_id,
+                user_id=1,
+                api_client_id=api_client_id,
+                export_destination_id=None,
+                document_types=[document_type] if document_type else None,
+                card_type="auto",
+            )
 
-                # Enqueue files for processing
-                try:
-                    await service.enqueue_files_to_kafka(batch_job.job_id)
-                except Exception as exc:
-                    logger.warning("Kafka enqueue failed, job will need manual retry: %s", exc)
+            # Enqueue files for processing
+            try:
+                await service.enqueue_files_to_kafka(batch_job.job_id)
+            except Exception as exc:
+                logger.warning("Kafka enqueue failed, job will need manual retry: %s", exc)
 
             return {
                 "job_id": batch_job.job_id,
@@ -186,9 +178,8 @@ class InternalYFWClient:
             db_gen = _get_db()
             db = next(db_gen)
             service = BatchProcessingService(db)
-            # BatchProcessingService is core code — bypass isolation
-            with bypass_plugin_isolation():
-                job_status = service.get_job_status(job_id, tenant_id)
+            # Tables accessed are all declared in permitted_core_tables.
+            job_status = service.get_job_status(job_id, tenant_id)
             if not job_status:
                 raise RuntimeError(f"Job {job_id} not found")
             return job_status

@@ -10,7 +10,8 @@
     "users",
     "batch_processing_jobs",
     "batch_file_processing",
-    "export_destination_configs"
+    "export_destination_configs",
+    "ai_configs"
   ],
   "api_routes": [
     {
