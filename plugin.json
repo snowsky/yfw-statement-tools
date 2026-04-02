@@ -7,6 +7,7 @@
   "license_tier": "agpl",
   "database_tables": [],
   "permitted_core_tables": [
+    "users",
     "batch_processing_jobs",
     "batch_file_processing",
     "export_destination_configs"
