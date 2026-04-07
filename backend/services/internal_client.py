@@ -30,6 +30,7 @@ class InternalYFWClient:
         file_content: bytes,
         filename: str,
         content_type: str = "application/pdf",
+        visitor_id: str | None = None,
     ) -> list[dict[str, Any]]:
         from core.services.statement_service import (
             process_bank_pdf_with_llm,
@@ -94,7 +95,10 @@ class InternalYFWClient:
                 pass
 
     async def upload_batch(
-        self, files: list[tuple[str, bytes, str]], document_type: str = "statement"
+        self, 
+        files: list[tuple[str, bytes, str]], 
+        document_type: str = "statement",
+        visitor_id: str | None = None
     ) -> dict[str, Any]:
         """Call BatchProcessingService directly — no API key needed."""
         from commercial.batch_processing.service import BatchProcessingService
@@ -109,17 +113,23 @@ class InternalYFWClient:
 
             master_gen = get_master_db()
             master_db = next(master_gen)
+            api_client_id = "internal_plugin"
+            if visitor_id:
+                api_client_id = f"visitor:{visitor_id}"
+            
             api_client = (
                 master_db.query(APIClient)
                 .filter(APIClient.tenant_id == tenant_id, APIClient.is_active == True)
                 .first()
             )
-            if not api_client:
+            
+            if api_client:
+                api_client_id = api_client.client_id
+            elif not visitor_id:
                 raise RuntimeError(
                     "No active API client found for this tenant. "
                     "Please create one in Settings > API Keys."
                 )
-            api_client_id = api_client.client_id
 
             service = BatchProcessingService(db)
 
