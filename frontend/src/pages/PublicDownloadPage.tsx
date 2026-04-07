@@ -11,7 +11,7 @@
  * Reads the token from the URL search params and triggers a direct
  * download from the backend's public download endpoint.
  */
-import React, { useState } from 'react'
+import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { recordPublicUsage } from '@/lib/publicUsage'

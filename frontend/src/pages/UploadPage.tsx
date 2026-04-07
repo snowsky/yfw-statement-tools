@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react'
+import { useRef, useState, useEffect } from 'react'
 import type { CSSProperties, DragEvent } from 'react'
 import { statementsApi } from '@/api/statements'
 import type { BatchFileStatus, BatchJobStatus } from '@/types'

@@ -43,7 +43,7 @@ export const pluginRoutes: PluginRouteConfig[] = [
   },
   {
     path: '/statement-tools/public',
-    component: PublicDownloadPage,
+    component: withLayout(PublicDownloadPage),
     pluginId: 'statement-tools',
     pluginName: 'Statement Tools',
     label: 'Download Statement',
