@@ -48,5 +48,10 @@
       "description": "Poll batch job status"
     }
   ],
-  "features": ["upload_portal", "batch-processing"]
+  "features": ["upload_portal", "batch-processing"],
+  "public_page": {
+    "path": "/p/statement-tools",
+    "label": "Statement Portal",
+    "ui_entry": "/plugins/statement-tools/"
+  }
 }

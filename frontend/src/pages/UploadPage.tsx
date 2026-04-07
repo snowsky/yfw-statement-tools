@@ -6,12 +6,16 @@ import type { BatchFileStatus, BatchJobStatus } from '@/types'
 const isSidecar = import.meta.env.VITE_MODE === 'sidecar'
 
 /** Build a shareable link for the given download token.
- *  Goes directly to the plugin UI via nginx — bypasses the platform's /p/ routing
- *  which doesn't forward query params to the iframe. */
+ *  Uses the platform's public /p/ routing which now forwards query params. */
 function shareUrl(token: string): string {
   const base = window.location.origin
+  // Extract tenant ID from current URL if present (t=1)
+  const params = new URLSearchParams(window.location.search)
+  const tenantId = params.get('t')
+  const tParam = tenantId ? `&t=${tenantId}` : ''
+  
   return isSidecar
-    ? `${base}/plugins/statement-tools/public/?token=${token}`
+    ? `${base}/p/statement-tools?token=${token}${tParam}`
     : `${base}/statement-tools/public?token=${token}`
 }
 
