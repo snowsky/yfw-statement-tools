@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     )
 
     # Standalone mode: connect to a YFW instance via HTTP
-    yfw_api_url: str = "http://localhost:8000"
+    yfw_api_url: str = "http://api:8000"
     yfw_api_key: str = ""
 
     # Standalone mode: protect this service's own API
