@@ -30,8 +30,10 @@ class InternalYFWClient:
         file_content: bytes,
         filename: str,
         content_type: str = "application/pdf",
-        visitor_id: str | None = None,
+        **kwargs
     ) -> list[dict[str, Any]]:
+        visitor_id = kwargs.get("visitor_id")
+        tenant_id = kwargs.get("tenant_id")
         from core.services.statement_service import (
             process_bank_pdf_with_llm,
             is_bank_llm_reachable,
@@ -98,9 +100,12 @@ class InternalYFWClient:
         self, 
         files: list[tuple[str, bytes, str]], 
         document_type: str = "statement",
-        visitor_id: str | None = None
+        **kwargs
     ) -> dict[str, Any]:
         """Call BatchProcessingService directly — no API key needed."""
+        visitor_id = kwargs.get("visitor_id")
+        # Do not shadow the tenant_id from argument if we ever use it
+        _tenant_id_arg = kwargs.get("tenant_id")
         from commercial.batch_processing.service import BatchProcessingService
         from core.models.database import get_db as _get_db, get_tenant_context, get_master_db
         from core.models.api_models import APIClient
@@ -113,9 +118,14 @@ class InternalYFWClient:
 
             master_gen = get_master_db()
             master_db = next(master_gen)
+
             api_client_id = "internal_plugin"
             if visitor_id:
                 api_client_id = f"visitor:{visitor_id}"
+            
+            tenant_id = get_tenant_context()
+            if not tenant_id and _tenant_id_arg:
+                tenant_id = _tenant_id_arg
             
             api_client = (
                 master_db.query(APIClient)
