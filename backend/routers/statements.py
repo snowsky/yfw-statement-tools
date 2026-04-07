@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 ALLOWED_EXTENSIONS = {"csv", "pdf"}
-MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
+MAX_FILE_SIZE = 20 * 1024 * 1024        # 20 MB for authenticated users
+PUBLIC_MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MB for public visitors
 
 
 # ── Temp file helpers ─────────────────────────────────────────────────────────
@@ -109,15 +110,23 @@ async def upload_statements(
     for upload in files:
         _validate_file(upload)
 
-    client = get_yfw_client(settings.yfw_api_url, settings.yfw_api_key)
+    limit = PUBLIC_MAX_FILE_SIZE if user.is_public else MAX_FILE_SIZE
+    client = get_yfw_client(
+        settings.yfw_api_url, 
+        settings.yfw_api_key,
+        secret_key=settings.yfw_secret_key
+    )
     all_transactions: list[dict] = []
     errors: list[str] = []
+
+    visitor_id = user.visitor_id if user.is_public else ""
+    visitor_tenant = user.visitor_tenant_id if user.is_public else ""
 
     for upload in files:
         name = upload.filename or "unknown"
         content = await upload.read()
-        if len(content) > MAX_FILE_SIZE:
-            errors.append(f"{name}: file exceeds 20 MB limit.")
+        if len(content) > limit:
+            errors.append(f"{name}: file exceeds {'1 MB' if user.is_public else '20 MB'} limit.")
             continue
 
         try:
@@ -125,6 +134,8 @@ async def upload_statements(
                 content,
                 name,
                 upload.content_type or "application/octet-stream",
+                visitor_id=visitor_id,
+                tenant_id=visitor_tenant,
             )
             for transaction in transactions:
                 transaction["source_file"] = name
@@ -222,14 +233,23 @@ async def upload_batch(
     for upload in files:
         _validate_file(upload)
 
-    client = get_yfw_client(settings.yfw_api_url, settings.yfw_api_key)
+    limit = PUBLIC_MAX_FILE_SIZE if user.is_public else MAX_FILE_SIZE
+    client = get_yfw_client(
+        settings.yfw_api_url, 
+        settings.yfw_api_key,
+        secret_key=settings.yfw_secret_key
+    )
     file_tuples: list[tuple[str, bytes, str]] = []
+    
+    visitor_id = user.visitor_id if user.is_public else ""
+    visitor_tenant = user.visitor_tenant_id if user.is_public else ""
+
     for upload in files:
         content = await upload.read()
-        if len(content) > MAX_FILE_SIZE:
+        if len(content) > limit:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"File {upload.filename} exceeds 20 MB limit.",
+                detail=f"File {upload.filename} exceeds {'1 MB' if user.is_public else '20 MB'} limit.",
             )
         file_tuples.append((
             upload.filename or "unknown",
@@ -238,7 +258,11 @@ async def upload_batch(
         ))
 
     try:
-        yfw_resp = await client.upload_batch(file_tuples)
+        yfw_resp = await client.upload_batch(
+            file_tuples, 
+            visitor_id=visitor_id, 
+            tenant_id=visitor_tenant
+        )
         return BatchUploadResponse(
             success=True,
             job_id=yfw_resp.get("job_id", ""),

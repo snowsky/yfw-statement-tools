@@ -1,6 +1,8 @@
-import { useRef, useState, useEffect } from 'react'
-import type { CSSProperties, DragEvent } from 'react'
+import React, { useRef, useState, useEffect } from 'react'
+import type { CSSProperties, DragEvent, ChangeEvent } from 'react'
 import { statementsApi } from '@/api/statements'
+import { apiRequest } from '@/lib/api/_base'
+import { getVisitorId, getPublicTenantId } from '@/lib/visitor'
 import type { BatchFileStatus, BatchJobStatus } from '@/types'
 
 const isSidecar = import.meta.env.VITE_MODE === 'sidecar'
@@ -42,7 +44,51 @@ export default function UploadPage() {
   const [generatingLink, setGeneratingLink] = useState(false)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState('')
+  const [quota, setQuota] = useState<{ remaining: number; daily_limit: number } | null>(null)
+  const [showPaywall, setShowPaywall] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  const isPublic = !localStorage.getItem('token') && !localStorage.getItem('statement_tools_api_key')
+
+  // Initial quota check for public users
+  useEffect(() => {
+    if (isPublic) {
+      checkPublicQuota()
+    }
+  }, [isPublic])
+
+  async function checkPublicQuota() {
+    try {
+      const visitorId = getVisitorId()
+      const tenantId = getPublicTenantId()
+      if (!visitorId || !tenantId) return
+
+      const data: any = await apiRequest(`/plugins/public-quota/statement-tools?visitor_id=${visitorId}&tenant_id=${tenantId}`)
+      setQuota({ remaining: data.remaining, daily_limit: data.daily_limit })
+      if (data.remaining <= 0) {
+        setShowPaywall(true)
+      }
+    } catch (e) {
+      console.error('Quota check failed:', e)
+    }
+  }
+
+  async function handleCheckout() {
+    try {
+      const tenantId = getPublicTenantId()
+      const visitorId = getVisitorId()
+      const data: any = await apiRequest(`/plugins/public-checkout/statement-tools?tenant_id=${tenantId}`, {
+        method: 'POST',
+        body: JSON.stringify({ visitor_id: visitorId })
+      })
+      if (data.url) {
+        window.location.href = data.url
+      }
+    } catch (e) {
+      console.error('Checkout failed:', e)
+      setError('Unable to start checkout session. Please try again later.')
+    }
+  }
 
   // Poll for batch job status
   useEffect(() => {
@@ -74,18 +120,31 @@ export default function UploadPage() {
 
   function addFiles(incoming: FileList | null) {
     if (!incoming) return
-    const accepted = Array.from(incoming).filter(isAccepted)
+    let accepted = Array.from(incoming).filter(isAccepted)
+    
+    // Public tier: 1MB limit
+    if (isPublic) {
+      const tooLarge = accepted.filter(f => f.size > 1024 * 1024)
+      if (tooLarge.length > 0) {
+        setError(`Some files were skipped — daily free-tier limit is 1MB per file. Authenticated users enjoy 20MB limits.`)
+        accepted = accepted.filter(f => f.size <= 1024 * 1024)
+      } else {
+        setError('')
+      }
+    }
+
     const rejected = Array.from(incoming).length - accepted.length
-    if (rejected > 0) setError(`${rejected} file(s) skipped — only CSV and PDF are supported.`)
-    else setError('')
-    setFiles((prev) => {
-      const names = new Set(prev.map((f) => f.name))
-      return [...prev, ...accepted.filter((f) => !names.has(f.name))]
+    if (rejected > 0 && !error) setError(`${rejected} file(s) skipped — only CSV and PDF are supported.`)
+    else if (rejected === 0 && !error) setError('')
+
+    setFiles((prev: File[]) => {
+      const names = new Set(prev.map((f: File) => f.name))
+      return [...prev, ...accepted.filter((f: File) => !names.has(f.name))]
     })
   }
 
   function removeFile(name: string) {
-    setFiles((prev) => prev.filter((f) => f.name !== name))
+    setFiles((prev: File[]) => prev.filter((f: File) => f.name !== name))
   }
 
   function onDrop(e: DragEvent<HTMLDivElement>) {
@@ -115,8 +174,13 @@ export default function UploadPage() {
         files: [],
       })
       setFiles([])
-    } catch (e: unknown) {
-      setError((e as Error).message)
+      if (isPublic) checkPublicQuota()
+    } catch (e: any) {
+      if (e.message?.includes('402') || e.message?.toLowerCase().includes('quota')) {
+        setShowPaywall(true)
+      } else {
+        setError(e.message || 'Upload failed.')
+      }
     } finally {
       setUploading(false)
     }
@@ -131,8 +195,13 @@ export default function UploadPage() {
       const res = await statementsApi.upload(files)
       const token = res.download_url.split('/').pop() ?? ''
       setShareLink(shareUrl(token))
-    } catch (e: unknown) {
-      setError((e as Error).message)
+      if (isPublic) checkPublicQuota()
+    } catch (e: any) {
+      if (e.message?.includes('402') || e.message?.toLowerCase().includes('quota')) {
+        setShowPaywall(true)
+      } else {
+        setError(e.message || 'Upload failed.')
+      }
     } finally {
       setGeneratingLink(false)
     }
@@ -155,6 +224,11 @@ export default function UploadPage() {
       <h1 style={headingStyle}>Statement Tools</h1>
       <p style={subtitleStyle}>
         Upload bank statements (CSV/PDF), extract transactions via AI, and download a merged CSV.
+        {isPublic && quota && (
+          <span style={{ marginLeft: 8, color: '#2563eb', fontWeight: 600 }}>
+            ({quota.remaining} of {quota.daily_limit} free daily files remaining)
+          </span>
+        )}
       </p>
 
       {/* Drop zone */}
@@ -164,7 +238,7 @@ export default function UploadPage() {
           onClick={() => inputRef.current?.click()}
           onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
           onDragLeave={() => setDragging(false)}
-          onDrop={onDrop}
+          onDrop={(e: DragEvent<HTMLDivElement>) => onDrop(e)}
         >
           <input
             ref={inputRef}
@@ -172,7 +246,7 @@ export default function UploadPage() {
             multiple
             accept={ACCEPTED}
             style={{ display: 'none' }}
-            onChange={(e) => addFiles(e.target.files)}
+            onChange={(e: ChangeEvent<HTMLInputElement>) => addFiles(e.target.files)}
           />
           <div style={dropIconStyle}>↑</div>
           <div style={{ fontSize: 14, color: '#374151', fontWeight: 500 }}>
@@ -187,7 +261,7 @@ export default function UploadPage() {
       {/* File list (pre-upload) */}
       {!activeJobId && files.length > 0 && (
         <div style={fileListStyle}>
-          {files.map((f) => (
+          {files.map((f: File) => (
             <div key={f.name} style={fileRowStyle}>
               <span style={fileIconStyle}>{f.name.endsWith('.pdf') ? '📄' : '📊'}</span>
               <span style={{ flex: 1, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -296,7 +370,7 @@ export default function UploadPage() {
               readOnly
               value={shareLink}
               style={shareLinkInput}
-              onClick={(e) => (e.target as HTMLInputElement).select()}
+              onClick={(e: React.MouseEvent<HTMLInputElement>) => (e.target as HTMLInputElement).select()}
             />
             <button onClick={handleCopy} style={btnPrimary}>
               {copied ? 'Copied!' : 'Copy'}
@@ -306,6 +380,32 @@ export default function UploadPage() {
       )}
 
       {error && <div style={errorBox}>{error}</div>}
+
+      {/* Paywall Modal */}
+      {showPaywall && (
+        <div style={modalOverlay}>
+          <div style={modalContent}>
+            <div style={{ fontSize: 48, marginBottom: 16 }}>🚀</div>
+            <h2 style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>Daily Limit Reached</h2>
+            <p style={{ color: '#4b5563', marginBottom: 24, lineHeight: 1.5 }}>
+              You've used your 5 free daily conversions. <br />
+              Upgrade to <strong>Premium</strong> for unlimited processing, 
+              larger files (up to 20MB), and advanced batch exports.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <button onClick={handleCheckout} style={{ ...btnPrimary, padding: '12px 24px', fontSize: 16 }}>
+                Upgrade to Premium ($14.99)
+              </button>
+              <button onClick={() => setShowPaywall(false)} style={{ ...btnOutline, border: 'none', color: '#6b7280' }}>
+                Maybe later
+              </button>
+            </div>
+            <p style={{ fontSize: 12, color: '#9ca3af', marginTop: 20 }}>
+              Free tokens reset daily at 00:00 UTC.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -341,3 +441,13 @@ const errorBox: CSSProperties = { background: '#fef2f2', border: '1px solid #fca
 
 const shareLinkBox: CSSProperties = { marginTop: 16, padding: 14, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10 }
 const shareLinkInput: CSSProperties = { flex: 1, fontSize: 12, padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontFamily: 'monospace', background: '#fff', color: '#374151', minWidth: 0 }
+
+const modalOverlay: CSSProperties = {
+  position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+  background: 'rgba(0, 0, 0, 0.4)', backdropFilter: 'blur(4px)',
+  display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+}
+const modalContent: CSSProperties = {
+  background: '#fff', padding: 40, borderRadius: 24, maxWidth: 440, width: '90%',
+  textAlign: 'center', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+}

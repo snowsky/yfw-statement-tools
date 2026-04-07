@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 
 
-def get_yfw_client(yfw_url: str = "", api_key: str = ""):
+def get_yfw_client(yfw_url: str = "", api_key: str = "", secret_key: str = ""):
     if os.getenv("YFW_SECRET_KEY"):
         try:
             from services.internal_client import InternalYFWClient
@@ -20,4 +20,4 @@ def get_yfw_client(yfw_url: str = "", api_key: str = ""):
         except ImportError:
             pass
     from services.yfw_client import YFWClient
-    return YFWClient(yfw_url=yfw_url, api_key=api_key)
+    return YFWClient(yfw_url=yfw_url, api_key=api_key, secret_key=secret_key)

@@ -9,6 +9,8 @@
  * API key auth uses the X-API-Key header if a token is stored.
  */
 
+import { getVisitorId, getPublicTenantId } from '@/lib/visitor'
+
 const BASE = '/api/v1'
 
 export async function apiRequest<T = unknown>(
@@ -26,6 +28,13 @@ export async function apiRequest<T = unknown>(
     headers['Authorization'] = `Bearer ${token}`
   } else if (apiKey) {
     headers['X-API-Key'] = apiKey
+  } else {
+    // ── Public Visitor Headers ──────────────────────────────────────────
+    const visitorId = getVisitorId()
+    const tenantId = getPublicTenantId()
+    if (visitorId) headers['X-Public-Visitor-Id'] = visitorId
+    if (tenantId) headers['X-Public-Tenant-Id'] = tenantId
+    headers['X-Public-Plugin-Id'] = 'statement-tools'
   }
 
   // Don't set Content-Type for FormData — browser sets it with boundary
