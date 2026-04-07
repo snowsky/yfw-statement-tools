@@ -48,11 +48,5 @@
       "description": "Poll batch job status"
     }
   ],
-  "features": ["upload_portal", "batch-processing"],
-  "public_page": {
-    "path": "/p/statement-tools",
-    "label": "Statement Download",
-    "description": "Download a processed bank statement CSV via a shared token link",
-    "ui_entry": "/plugins/statement-tools/public/"
-  }
+  "features": ["upload_portal", "batch-processing"]
 }

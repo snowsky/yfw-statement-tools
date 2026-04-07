@@ -3,6 +3,18 @@ import type { CSSProperties, DragEvent } from 'react'
 import { statementsApi } from '@/api/statements'
 import type { BatchFileStatus, BatchJobStatus } from '@/types'
 
+const isSidecar = import.meta.env.VITE_MODE === 'sidecar'
+
+/** Build a shareable link for the given download token.
+ *  Goes directly to the plugin UI via nginx — bypasses the platform's /p/ routing
+ *  which doesn't forward query params to the iframe. */
+function shareUrl(token: string): string {
+  const base = window.location.origin
+  return isSidecar
+    ? `${base}/plugins/statement-tools/public/?token=${token}`
+    : `${base}/statement-tools/public?token=${token}`
+}
+
 const ACCEPTED = '.csv,.pdf'
 
 function isAccepted(file: File): boolean {
@@ -22,6 +34,9 @@ export default function UploadPage() {
   const [uploading, setUploading] = useState(false)
   const [activeJobId, setActiveJobId] = useState<string | null>(null)
   const [jobStatus, setJobStatus] = useState<BatchJobStatus | null>(null)
+  const [shareLink, setShareLink] = useState<string | null>(null)
+  const [generatingLink, setGeneratingLink] = useState(false)
+  const [copied, setCopied] = useState(false)
   const [error, setError] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -101,6 +116,29 @@ export default function UploadPage() {
     } finally {
       setUploading(false)
     }
+  }
+
+  async function handleGetShareLink() {
+    if (files.length === 0) return
+    setGeneratingLink(true)
+    setShareLink(null)
+    setError('')
+    try {
+      const res = await statementsApi.upload(files)
+      const token = res.download_url.split('/').pop() ?? ''
+      setShareLink(shareUrl(token))
+    } catch (e: unknown) {
+      setError((e as Error).message)
+    } finally {
+      setGeneratingLink(false)
+    }
+  }
+
+  async function handleCopy() {
+    if (!shareLink) return
+    await navigator.clipboard.writeText(shareLink)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   const canSubmit = files.length > 0 && !uploading && !activeJobId
@@ -216,7 +254,17 @@ export default function UploadPage() {
               {uploading ? 'Starting Job...' : `Upload & Process${files.length > 0 ? ` (${files.length} files)` : ''}`}
             </button>
             {files.length > 0 && (
-              <button onClick={() => setFiles([])} style={btnOutline}>Clear all</button>
+              <button
+                onClick={handleGetShareLink}
+                disabled={!canSubmit || generatingLink}
+                style={canSubmit && !generatingLink ? btnOutline : btnDisabled}
+                title="Generate a shareable download link (sync upload)"
+              >
+                {generatingLink ? 'Generating...' : '🔗 Get shareable link'}
+              </button>
+            )}
+            {files.length > 0 && (
+              <button onClick={() => { setFiles([]); setShareLink(null) }} style={btnOutline}>Clear all</button>
             )}
           </>
         ) : (
@@ -232,6 +280,26 @@ export default function UploadPage() {
           </>
         )}
       </div>
+
+      {/* Shareable link */}
+      {shareLink && (
+        <div style={shareLinkBox}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6, color: '#1d4ed8' }}>
+            Shareable download link (expires in 1 hour)
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input
+              readOnly
+              value={shareLink}
+              style={shareLinkInput}
+              onClick={(e) => (e.target as HTMLInputElement).select()}
+            />
+            <button onClick={handleCopy} style={btnPrimary}>
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {error && <div style={errorBox}>{error}</div>}
     </div>
@@ -266,3 +334,6 @@ const btnDisabled: CSSProperties = { ...btnPrimary, background: '#e5e7eb', color
 const btnOutline: CSSProperties = { ...btnPrimary, background: '#fff', color: '#374151', border: '1px solid #d1d5db' }
 
 const errorBox: CSSProperties = { background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 8, padding: '12px 16px', color: '#991b1b', marginTop: 14, fontSize: 14 }
+
+const shareLinkBox: CSSProperties = { marginTop: 16, padding: 14, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10 }
+const shareLinkInput: CSSProperties = { flex: 1, fontSize: 12, padding: '7px 10px', border: '1px solid #d1d5db', borderRadius: 6, fontFamily: 'monospace', background: '#fff', color: '#374151', minWidth: 0 }
