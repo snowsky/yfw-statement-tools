@@ -7,10 +7,14 @@ import './index.css'
 
 const queryClient = new QueryClient()
 
+// In sidecar mode the UI is served at /plugins/statement-tools/ by the main
+// nginx. Setting basename strips that prefix so React Router routes match from /.
+const basename = import.meta.env.VITE_MODE === 'sidecar' ? '/plugins/statement-tools' : ''
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
+      <BrowserRouter basename={basename}>
         <App />
       </BrowserRouter>
     </QueryClientProvider>
