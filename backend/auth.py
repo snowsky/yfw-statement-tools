@@ -78,9 +78,12 @@ async def get_current_user(
         return PluginUser(email="admin@standalone")
 
     provided_key = api_key_header or (bearer.credentials if bearer else None)
-    if provided_key != local_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key.",
-        )
-    return PluginUser(email="admin@standalone")
+    if provided_key and provided_key == local_key:
+        return PluginUser(email="admin@standalone")
+        
+    # If we got here and it wasn't a valid API key, and we didn't have visitor headers,
+    # it's truly unauthorized.
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid API key or missing visitor identity.",
+    )

@@ -20,14 +20,15 @@ class YFWClient:
 
     def _headers(self, visitor_id: str = "", tenant_id: str = "") -> dict[str, str]:
         headers = {}
-        if self._api_key:
-            headers["X-API-Key"] = self._api_key
-        elif self._secret_key:
+        # Prioritize secret key (Sidecar mode) over API key (Standalone mode)
+        if self._secret_key:
             headers["X-Internal-Secret"] = self._secret_key
             if visitor_id:
                 headers["X-Public-Visitor-Id"] = visitor_id
             if tenant_id:
                 headers["X-Public-Tenant-Id"] = tenant_id
+        elif self._api_key:
+            headers["X-API-Key"] = self._api_key
         return headers
 
     async def process_statement(

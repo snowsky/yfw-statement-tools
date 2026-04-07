@@ -284,7 +284,11 @@ async def get_batch_job_status(
     settings: Settings = Depends(get_settings),
 ):
     """Get the status and results of a batch processing job."""
-    client = get_yfw_client(settings.yfw_api_url, settings.yfw_api_key)
+    client = get_yfw_client(
+        settings.yfw_api_url, 
+        settings.yfw_api_key,
+        secret_key=settings.yfw_secret_key
+    )
     try:
         yfw_resp = await client.get_job_status(job_id)
         progress = yfw_resp.get("progress", {})
