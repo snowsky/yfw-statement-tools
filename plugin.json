@@ -5,6 +5,10 @@
   "author": "YourFinanceWORKS",
   "license": "AGPLv3",
   "license_tier": "agpl",
+  "mode": "sidecar",
+  "service_name": "plugin_statement_tools",
+  "api_prefix": "/api/v1/statement-tools",
+  "ui_entry": "/plugins/statement-tools/",
   "database_tables": [],
   "permitted_core_tables": [
     "users",
@@ -13,23 +17,42 @@
     "export_destination_configs",
     "ai_configs"
   ],
+  "nav_items": [
+    {
+      "id": "statement-tools",
+      "path": "/statement-tools",
+      "label": "Statement Tools",
+      "icon": "FileSpreadsheet",
+      "priority": 5
+    }
+  ],
   "api_routes": [
     {
       "path": "/api/v1/statement-tools/statements/upload",
-      "methods": [
-        "POST"
-      ],
+      "methods": ["POST"],
       "description": "Upload multiple bank statements (PDF/CSV) for AI parsing"
     },
     {
       "path": "/api/v1/statement-tools/statements/download/{token}",
-      "methods": [
-        "GET"
-      ],
-      "description": "Download merged statement CSV (valid 1 hour)"
+      "methods": ["GET"],
+      "description": "Download merged statement CSV — public endpoint, no auth required"
+    },
+    {
+      "path": "/api/v1/statement-tools/batch/upload",
+      "methods": ["POST"],
+      "description": "Upload files for async batch processing"
+    },
+    {
+      "path": "/api/v1/statement-tools/batch/jobs/{job_id}",
+      "methods": ["GET"],
+      "description": "Poll batch job status"
     }
   ],
-  "features": [
-    "upload_portal"
-  ]
+  "features": ["upload_portal", "batch-processing"],
+  "public_page": {
+    "path": "/p/statement-tools",
+    "label": "Statement Download",
+    "description": "Download a processed bank statement CSV via a shared token link",
+    "ui_entry": "/plugins/statement-tools/public/"
+  }
 }
