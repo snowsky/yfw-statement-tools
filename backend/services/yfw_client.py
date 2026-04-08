@@ -25,8 +25,12 @@ class YFWClient:
             headers["X-Internal-Secret"] = self._secret_key
             if visitor_id:
                 headers["X-Public-Visitor-Id"] = visitor_id
-            if tenant_id:
-                headers["X-Public-Tenant-Id"] = tenant_id
+                if tenant_id:
+                    headers["X-Public-Tenant-Id"] = tenant_id
+            elif tenant_id:
+                # Authenticated (non-visitor) sidecar request — use a separate header
+                # so the main app can distinguish it from the public-visitor quota path
+                headers["X-Plugin-Tenant-Id"] = tenant_id
         elif self._api_key:
             headers["X-API-Key"] = self._api_key
         return headers

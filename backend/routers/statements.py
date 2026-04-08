@@ -120,7 +120,7 @@ async def upload_statements(
     errors: list[str] = []
 
     visitor_id = user.visitor_id if user.is_public else ""
-    visitor_tenant = user.visitor_tenant_id if user.is_public else ""
+    tenant_id = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else "")
 
     for upload in files:
         name = upload.filename or "unknown"
@@ -135,7 +135,7 @@ async def upload_statements(
                 name,
                 upload.content_type or "application/octet-stream",
                 visitor_id=visitor_id,
-                tenant_id=visitor_tenant,
+                tenant_id=tenant_id,
             )
             for transaction in transactions:
                 transaction["source_file"] = name
@@ -235,14 +235,14 @@ async def upload_batch(
 
     limit = PUBLIC_MAX_FILE_SIZE if user.is_public else MAX_FILE_SIZE
     client = get_yfw_client(
-        settings.yfw_api_url, 
+        settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key
     )
     file_tuples: list[tuple[str, bytes, str]] = []
-    
+
     visitor_id = user.visitor_id if user.is_public else ""
-    visitor_tenant = user.visitor_tenant_id if user.is_public else ""
+    visitor_tenant = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else "")
 
     for upload in files:
         content = await upload.read()
