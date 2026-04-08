@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class YFWClient:
     """Async HTTP client for YFW statement processing API."""
 
-    def __init__(self, yfw_url: str, api_key: str, secret_key: str = ""):
+    def __init__(self, yfw_url: str, api_key: str, secret_key: str = "", user_email: str = ""):
         # Normalize URL: remove trailing slashes and redundant /api/v1
         base = yfw_url.rstrip("/")
         if base.endswith("/api/v1"):
@@ -17,6 +17,7 @@ class YFWClient:
         self._base = base
         self._api_key = api_key
         self._secret_key = secret_key
+        self._user_email = user_email
 
     def _headers(self, visitor_id: str = "", tenant_id: str = "") -> dict[str, str]:
         headers = {}
@@ -28,9 +29,11 @@ class YFWClient:
                 if tenant_id:
                     headers["X-Public-Tenant-Id"] = tenant_id
             elif tenant_id:
-                # Authenticated (non-visitor) sidecar request — use a separate header
-                # so the main app can distinguish it from the public-visitor quota path
                 headers["X-Plugin-Tenant-Id"] = tenant_id
+            # Always forward the authenticated user's email so the main app can
+            # resolve their tenant even from JWTs that predate the tenant_id claim
+            if self._user_email:
+                headers["X-Plugin-User-Email"] = self._user_email
         elif self._api_key:
             headers["X-API-Key"] = self._api_key
         return headers

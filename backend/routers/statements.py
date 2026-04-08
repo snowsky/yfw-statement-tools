@@ -112,9 +112,10 @@ async def upload_statements(
 
     limit = PUBLIC_MAX_FILE_SIZE if user.is_public else MAX_FILE_SIZE
     client = get_yfw_client(
-        settings.yfw_api_url, 
+        settings.yfw_api_url,
         settings.yfw_api_key,
-        secret_key=settings.yfw_secret_key
+        secret_key=settings.yfw_secret_key,
+        user_email=user.email if not user.is_public else "",
     )
     all_transactions: list[dict] = []
     errors: list[str] = []
@@ -237,7 +238,8 @@ async def upload_batch(
     client = get_yfw_client(
         settings.yfw_api_url,
         settings.yfw_api_key,
-        secret_key=settings.yfw_secret_key
+        secret_key=settings.yfw_secret_key,
+        user_email=user.email if not user.is_public else "",
     )
     file_tuples: list[tuple[str, bytes, str]] = []
 

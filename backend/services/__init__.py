@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 
 
-def get_yfw_client(yfw_url: str = "", api_key: str = "", secret_key: str = ""):
+def get_yfw_client(yfw_url: str = "", api_key: str = "", secret_key: str = "", user_email: str = ""):
     """
     Return a YFW client.
     Prioritizes YFWClient (HTTP) which uses internal_secret for sidecar trust.
@@ -22,7 +22,7 @@ def get_yfw_client(yfw_url: str = "", api_key: str = "", secret_key: str = ""):
     if os.getenv("YFW_INTERNAL_MODE") == "true":
         try:
             from services.internal_client import InternalYFWClient
-            import core.models.database # check for module
+            import core.models.database  # check for module
             return InternalYFWClient()
         except ImportError:
             pass
@@ -30,4 +30,4 @@ def get_yfw_client(yfw_url: str = "", api_key: str = "", secret_key: str = ""):
     # 2. Default: Use YFWClient (HTTP)
     # This works for both standalone (X-API-Key) and sidecar (X-Internal-Secret).
     from services.yfw_client import YFWClient
-    return YFWClient(yfw_url=yfw_url, api_key=api_key, secret_key=secret_key)
+    return YFWClient(yfw_url=yfw_url, api_key=api_key, secret_key=secret_key, user_email=user_email)
