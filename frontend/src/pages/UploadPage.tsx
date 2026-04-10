@@ -3,6 +3,7 @@ import type { CSSProperties, DragEvent, ChangeEvent } from 'react'
 import { statementsApi } from '@/api/statements'
 import { apiRequest } from '@/lib/api/_base'
 import { getVisitorId, getPublicTenantId } from '@/lib/visitor'
+import { recordPublicUsage } from '@/lib/publicUsage'
 import type { BatchFileStatus, BatchJobStatus } from '@/types'
 
 const isSidecar = import.meta.env.VITE_MODE === 'sidecar'
@@ -174,7 +175,11 @@ export default function UploadPage() {
         files: [],
       })
       setFiles([])
-      if (isPublic) checkPublicQuota()
+      
+      // Track usage in the host application
+      recordPublicUsage('batch/upload', files.length)
+      
+      if (isPublic && !isSidecar) checkPublicQuota()
     } catch (e: any) {
       if (e.message?.includes('402') || e.message?.toLowerCase().includes('quota')) {
         setShowPaywall(true)
@@ -195,7 +200,11 @@ export default function UploadPage() {
       const res = await statementsApi.upload(files)
       const token = res.download_url.split('/').pop() ?? ''
       setShareLink(shareUrl(token))
-      if (isPublic) checkPublicQuota()
+      
+      // Track usage in the host application
+      recordPublicUsage('share/link', files.length)
+
+      if (isPublic && !isSidecar) checkPublicQuota()
     } catch (e: any) {
       if (e.message?.includes('402') || e.message?.toLowerCase().includes('quota')) {
         setShowPaywall(true)
@@ -381,8 +390,8 @@ export default function UploadPage() {
 
       {error && <div style={errorBox}>{error}</div>}
 
-      {/* Paywall Modal */}
-      {showPaywall && (
+      {/* Paywall Modal - only show if not in sidecar mode (host app handles its own paywall) */}
+      {showPaywall && !isSidecar && (
         <div style={modalOverlay}>
           <div style={modalContent}>
             <div style={{ fontSize: 48, marginBottom: 16 }}>🚀</div>
