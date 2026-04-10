@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import { useEffect } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import UploadPage from './pages/UploadPage'
 import PublicDownloadPage from './pages/PublicDownloadPage'
