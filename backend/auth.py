@@ -43,8 +43,6 @@ async def get_current_user(
     settings: Settings = Depends(get_settings),
 ) -> PluginUser:
     yfw_secret = os.getenv("YFW_SECRET_KEY", "")
-    if yfw_secret:
-        print(f"DEBUG: YFW_SECRET_KEY in sidecar. Length: {len(yfw_secret)}. Starts with: {yfw_secret[:3]}...{yfw_secret[-3:]}")
 
     # ── Sidecar mode: validate JWT from the main YFW app ──────────────────
     if yfw_secret:
@@ -57,12 +55,10 @@ async def get_current_user(
                     id=payload.get("user_id"),
                     tenant_id=payload.get("tenant_id"),
                 )
-            except Exception as e:
-                print(f"DEBUG: JWT Decode failed in sidecar: {e}")
-                print(f"DEBUG: Raw token received: {bearer.credentials[:10]}...{bearer.credentials[-10:]}")
+            except Exception:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=f"Invalid token: {str(e)}",
+                    detail="Invalid token.",
                 )
         
         # Check for Public Visitor headers (unauthenticated)
