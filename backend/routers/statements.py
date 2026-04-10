@@ -115,7 +115,7 @@ async def upload_statements(
         settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
-        user_email=user.email if not user.is_public else "",
+        user_email=user.email,
     )
     all_transactions: list[dict] = []
     errors: list[str] = []
@@ -239,7 +239,7 @@ async def upload_batch(
         settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
-        user_email=user.email if not user.is_public else "",
+        user_email=user.email,
     )
     file_tuples: list[tuple[str, bytes, str]] = []
 

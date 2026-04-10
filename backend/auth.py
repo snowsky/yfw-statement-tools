@@ -72,6 +72,13 @@ async def get_current_user(
                 visitor_tenant_id=visitor_tenant_id
             )
 
+        # If we are in Sidecar mode but got no bearer token and no visitor headers,
+        # it is truly unauthorized. DO NOT fall back to admin@standalone here.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required (Sidecar mode).",
+        )
+
     # ── Standalone mode: API key or open dev access ────────────────────────
     local_key = os.getenv("STATEMENT_TOOLS_API_KEY", "")
     if not local_key:
@@ -81,9 +88,8 @@ async def get_current_user(
     if provided_key and provided_key == local_key:
         return PluginUser(email="admin@standalone")
         
-    # If we got here and it wasn't a valid API key, and we didn't have visitor headers,
-    # it's truly unauthorized.
+    # If we got here and it wasn't a valid API key, it's truly unauthorized.
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid API key or missing visitor identity.",
+        detail="Invalid API key.",
     )
