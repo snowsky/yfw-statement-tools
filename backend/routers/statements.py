@@ -289,7 +289,8 @@ async def get_batch_job_status(
     client = get_yfw_client(
         settings.yfw_api_url, 
         settings.yfw_api_key,
-        secret_key=settings.yfw_secret_key
+        secret_key=settings.yfw_secret_key,
+        user_email=user.email
     )
     try:
         yfw_resp = await client.get_job_status(job_id)
