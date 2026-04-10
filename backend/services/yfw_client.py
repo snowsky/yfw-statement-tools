@@ -24,6 +24,7 @@ class YFWClient:
         # Prioritize secret key (Sidecar mode) over API key (Standalone mode)
         if self._secret_key:
             headers["X-Internal-Secret"] = self._secret_key
+            headers["X-Plugin-Id"] = "statement-tools"
             if visitor_id:
                 headers["X-Public-Visitor-Id"] = visitor_id
                 if tenant_id:
