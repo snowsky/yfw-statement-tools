@@ -1,4 +1,5 @@
 import type { SavedJob } from '@/types'
+import { getVisitorId } from '@/lib/visitor'
 
 const MAX_JOBS = 50
 
@@ -34,7 +35,10 @@ function getScope(): string {
 
   // 3. Public visitor — combine visitor UUID with tenant so that the same
   //    browser visiting two different tenants also gets separate histories.
-  const visitorId = localStorage.getItem('yfw_public_visitor_id') ?? 'anon'
+  // Call getVisitorId() (not a raw localStorage read) so the UUID is created
+  // on first access; otherwise early calls before any API request would all
+  // share the fallback 'anon' key.
+  const visitorId = getVisitorId() || 'anon'
   const params = new URLSearchParams(window.location.search)
   const tenantId = params.get('t') ?? params.get('tenantId') ?? 'default'
   return `public_${tenantId}_${visitorId}`
