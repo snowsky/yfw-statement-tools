@@ -56,26 +56,57 @@ export default function UploadPage() {
 
   const isPublic = !localStorage.getItem('token') && !localStorage.getItem('statement_tools_api_key')
 
-  // Load job history from localStorage on mount, then refresh any stale in-progress jobs
-  useEffect(() => {
-    const jobs = loadJobs()
-    setJobHistory(jobs)
+  /**
+   * Load job history and refresh any stale in-progress statuses.
+   *
+   * Authenticated users: server is source of truth (works across browsers/devices).
+   * Public visitors:     localStorage only (no server-side per-visitor identity).
+   *
+   * In both cases we enrich with locally cached file names so the "N files —
+   * name1, name2" line still shows when the history was seeded on this browser.
+   */
+  async function refreshHistory() {
+    let jobs: SavedJob[]
 
-    const stale = jobs.filter(j => j.status === 'pending' || j.status === 'processing')
-    if (stale.length === 0) return
-
-    // Fire-and-forget: refresh each stale job status once
-    ;(async () => {
-      for (const job of stale) {
-        try {
-          const status = await statementsApi.getJobStatus(job.job_id)
-          updateJobStatus(job.job_id, status.status)
-        } catch {
-          // Job may no longer exist upstream — leave status as-is
-        }
+    if (isPublic) {
+      jobs = loadJobs()
+    } else {
+      try {
+        const resp = await statementsApi.listJobs()
+        const serverJobs = resp.jobs ?? []
+        // Enrich with file names from local cache (server list doesn't include them)
+        const localMap = new Map(loadJobs().map(j => [j.job_id, j]))
+        jobs = serverJobs.map(j => ({
+          job_id: j.job_id,
+          created_at: j.created_at,
+          total_files: j.total_files,
+          file_names: localMap.get(j.job_id)?.file_names ?? [],
+          status: j.status,
+        }))
+      } catch {
+        // Fall back to localStorage if server is unreachable
+        jobs = loadJobs()
       }
-      setJobHistory(loadJobs())
-    })()
+    }
+
+    // Refresh any stale in-progress statuses once
+    const stale = jobs.filter(j => j.status === 'pending' || j.status === 'processing')
+    for (const job of stale) {
+      try {
+        const s = await statementsApi.getJobStatus(job.job_id)
+        updateJobStatus(job.job_id, s.status)
+        job.status = s.status
+      } catch {
+        // Job may no longer exist upstream — leave status as-is
+      }
+    }
+
+    setJobHistory(jobs)
+  }
+
+  // Load history on mount
+  useEffect(() => {
+    refreshHistory()
   }, [])
 
   // Initial quota check for public users
@@ -138,7 +169,7 @@ export default function UploadPage() {
           ) {
             window.clearInterval(interval)
             updateJobStatus(activeJobId, status.status)
-            setJobHistory(loadJobs())
+            refreshHistory()
           }
         } catch (e) {
           console.error('Polling error:', e)
@@ -211,8 +242,8 @@ export default function UploadPage() {
         status: res.status,
       }
       saveJob(newJob)
-      setJobHistory(loadJobs())
       setFiles([])
+      refreshHistory()
       
       // Track usage in the host application
       recordPublicUsage('batch/upload', files.length)
@@ -309,8 +340,10 @@ export default function UploadPage() {
   }
 
   function handleRemoveJob(jobId: string) {
+    // Always purge from localStorage (no-op if not there)
     removeJob(jobId)
-    setJobHistory(loadJobs())
+    // Remove from local state immediately without a server round-trip
+    setJobHistory(prev => prev.filter(j => j.job_id !== jobId))
     setSelectedForMerge(prev => {
       const next = new Set(prev)
       next.delete(jobId)

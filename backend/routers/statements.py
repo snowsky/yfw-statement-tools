@@ -217,6 +217,37 @@ async def download_csv(
     )
 
 
+@router.get("/batch/jobs")
+async def list_batch_jobs(
+    limit: int = 50,
+    user: PluginUser = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    """
+    Return the authenticated user's batch job history from the YFW server.
+
+    Public visitors have no server-side identity, so an empty list is returned —
+    their history is managed client-side via localStorage.
+    """
+    if user.is_public:
+        return {"jobs": [], "total": 0}
+
+    client = get_yfw_client(
+        settings.yfw_api_url,
+        settings.yfw_api_key,
+        secret_key=settings.yfw_secret_key,
+        user_email=user.email,
+    )
+    try:
+        return await client.list_jobs(limit=min(limit, 100))
+    except Exception as exc:
+        logger.error("Failed to list batch jobs: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
+
+
 @router.post("/batch/upload", response_model=BatchUploadResponse)
 async def upload_batch(
     files: list[UploadFile] = File(...),

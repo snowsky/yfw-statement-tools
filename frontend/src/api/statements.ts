@@ -30,6 +30,10 @@ export const statementsApi = {
     })
   },
 
+  /** Fetch server-side job history for the authenticated user (empty for public visitors). */
+  listJobs: (limit = 50): Promise<{ jobs: Array<{ job_id: string; status: string; total_files: number; created_at: string }>; total: number }> =>
+    apiRequest(`${PREFIX}/batch/jobs?limit=${limit}`),
+
   /** Poll for the current status of a batch job. */
   getJobStatus: (jobId: string): Promise<BatchJobStatus> =>
     apiRequest<BatchJobStatus>(`${PREFIX}/batch/jobs/${jobId}`),

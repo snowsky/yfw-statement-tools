@@ -104,6 +104,15 @@ class YFWClient:
         self._handle_error(resp)
         return resp.json()
 
+    async def list_jobs(self, limit: int = 50) -> dict[str, Any]:
+        """List batch jobs for the current authenticated user."""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            url = f"{self._base}/api/v1/external-transactions/batch-processing/jobs"
+            resp = await client.get(url, params={"limit": limit}, headers=self._headers())
+
+        self._handle_error(resp)
+        return resp.json()
+
     async def get_job_status(self, job_id: str) -> dict[str, Any]:
         """Get the current status and extracted data for a batch job."""
         async with httpx.AsyncClient(timeout=10.0) as client:

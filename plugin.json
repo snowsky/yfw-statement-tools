@@ -56,6 +56,11 @@
       "path": "/api/v1/statement-tools/batch/merge-csv",
       "methods": ["POST"],
       "description": "Merge transactions from multiple completed jobs into a single CSV"
+    },
+    {
+      "path": "/api/v1/statement-tools/batch/jobs",
+      "methods": ["GET"],
+      "description": "List batch jobs for the authenticated user (server-side history)"
     }
   ],
   "features": ["upload_portal", "batch-processing", "job-history"],
