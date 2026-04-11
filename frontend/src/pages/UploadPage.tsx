@@ -56,9 +56,26 @@ export default function UploadPage() {
 
   const isPublic = !localStorage.getItem('token') && !localStorage.getItem('statement_tools_api_key')
 
-  // Load job history from localStorage on mount
+  // Load job history from localStorage on mount, then refresh any stale in-progress jobs
   useEffect(() => {
-    setJobHistory(loadJobs())
+    const jobs = loadJobs()
+    setJobHistory(jobs)
+
+    const stale = jobs.filter(j => j.status === 'pending' || j.status === 'processing')
+    if (stale.length === 0) return
+
+    // Fire-and-forget: refresh each stale job status once
+    ;(async () => {
+      for (const job of stale) {
+        try {
+          const status = await statementsApi.getJobStatus(job.job_id)
+          updateJobStatus(job.job_id, status.status)
+        } catch {
+          // Job may no longer exist upstream — leave status as-is
+        }
+      }
+      setJobHistory(loadJobs())
+    })()
   }, [])
 
   // Initial quota check for public users
