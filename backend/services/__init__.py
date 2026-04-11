@@ -13,11 +13,22 @@ from __future__ import annotations
 import os
 
 
-def get_yfw_client(yfw_url: str = "", api_key: str = "", secret_key: str = "", user_email: str = ""):
+def get_yfw_client(
+    yfw_url: str = "",
+    api_key: str = "",
+    secret_key: str = "",
+    user_email: str = "",
+    visitor_id: str | None = None,
+    tenant_id: str | None = None,
+):
     """
     Return a YFW client.
     Prioritizes YFWClient (HTTP) which uses internal_secret for sidecar trust.
     Only falls back to InternalYFWClient if internal modules are explicitly available.
+
+    visitor_id / tenant_id: stored on the client so every method call automatically
+    sends the correct tenant/visitor context headers — important for public-page users
+    where no user_email is forwarded and tenant resolution relies on these headers.
     """
     # 1. Check if we should use direct Python calls (True Plugin mode)
     if os.getenv("YFW_INTERNAL_MODE") == "true":
@@ -31,4 +42,11 @@ def get_yfw_client(yfw_url: str = "", api_key: str = "", secret_key: str = "", u
     # 2. Default: Use YFWClient (HTTP)
     # This works for both standalone (X-API-Key) and sidecar (X-Internal-Secret).
     from services.yfw_client import YFWClient
-    return YFWClient(yfw_url=yfw_url, api_key=api_key, secret_key=secret_key, user_email=user_email)
+    return YFWClient(
+        yfw_url=yfw_url,
+        api_key=api_key,
+        secret_key=secret_key,
+        user_email=user_email,
+        visitor_id=visitor_id,
+        tenant_id=tenant_id,
+    )

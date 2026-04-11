@@ -9,7 +9,16 @@ logger = logging.getLogger(__name__)
 class YFWClient:
     """Async HTTP client for YFW statement processing API."""
 
-    def __init__(self, yfw_url: str, api_key: str, secret_key: str = "", user_email: str = "", plugin_id: str = "statement-tools"):
+    def __init__(
+        self,
+        yfw_url: str,
+        api_key: str,
+        secret_key: str = "",
+        user_email: str = "",
+        plugin_id: str = "statement-tools",
+        visitor_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ):
         # Normalize URL: remove trailing slashes and redundant /api/v1
         base = yfw_url.rstrip("/")
         if base.endswith("/api/v1"):
@@ -19,19 +28,27 @@ class YFWClient:
         self._secret_key = secret_key
         self._user_email = user_email
         self._plugin_id = plugin_id
+        # Stored so every method call carries the correct tenant/visitor context
+        # without needing per-call parameters.
+        self._visitor_id = visitor_id
+        self._tenant_id = tenant_id
 
     def _headers(self, visitor_id: Optional[str] = None, tenant_id: Optional[str] = None) -> dict[str, str]:
+        # Per-call params override instance defaults
+        effective_visitor = visitor_id or self._visitor_id
+        effective_tenant = tenant_id or self._tenant_id
+
         headers = {}
         # Prioritize secret key (Sidecar mode) over API key (Standalone mode)
         if self._secret_key:
             headers["X-Internal-Secret"] = self._secret_key
             headers["X-Plugin-Id"] = self._plugin_id
-            if visitor_id:
-                headers["X-Public-Visitor-Id"] = visitor_id
-                if tenant_id:
-                    headers["X-Public-Tenant-Id"] = tenant_id
-            elif tenant_id:
-                headers["X-Plugin-Tenant-Id"] = tenant_id
+            if effective_visitor:
+                headers["X-Public-Visitor-Id"] = effective_visitor
+                if effective_tenant:
+                    headers["X-Public-Tenant-Id"] = effective_tenant
+            elif effective_tenant:
+                headers["X-Plugin-Tenant-Id"] = effective_tenant
             # Always forward the authenticated user's email so the main app can
             # resolve their tenant even from JWTs that predate the tenant_id claim
             if self._user_email:

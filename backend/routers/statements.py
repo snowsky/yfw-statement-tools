@@ -113,17 +113,18 @@ async def upload_statements(
         _validate_file(upload)
 
     limit = PUBLIC_MAX_FILE_SIZE if user.is_public else MAX_FILE_SIZE
+    visitor_id = user.visitor_id if user.is_public else None
+    tenant_id = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else None)
     client = get_yfw_client(
         settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
         user_email=None if user.is_public else user.email,
+        visitor_id=visitor_id,
+        tenant_id=tenant_id,
     )
     all_transactions: list[dict] = []
     errors: list[str] = []
-
-    visitor_id = user.visitor_id if user.is_public else None
-    tenant_id = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else None)
 
     for upload in files:
         name = upload.filename or "unknown"
@@ -232,11 +233,13 @@ async def list_batch_jobs(
     if user.is_public:
         return {"jobs": [], "total": 0}
 
+    tenant_id = str(user.tenant_id) if user.tenant_id else None
     client = get_yfw_client(
         settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
         user_email=user.email,
+        tenant_id=tenant_id,
     )
     try:
         return await client.list_jobs(limit=min(limit, 100))
@@ -268,16 +271,17 @@ async def upload_batch(
         _validate_file(upload)
 
     limit = PUBLIC_MAX_FILE_SIZE if user.is_public else MAX_FILE_SIZE
+    visitor_id = user.visitor_id if user.is_public else None
+    visitor_tenant = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else None)
     client = get_yfw_client(
         settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
         user_email=None if user.is_public else user.email,
+        visitor_id=visitor_id,
+        tenant_id=visitor_tenant,
     )
     file_tuples: list[tuple[str, bytes, str]] = []
-
-    visitor_id = user.visitor_id if user.is_public else None
-    visitor_tenant = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else None)
 
     for upload in files:
         content = await upload.read()
@@ -319,11 +323,15 @@ async def get_batch_job_status(
     settings: Settings = Depends(get_settings),
 ):
     """Get the status and results of a batch processing job."""
+    visitor_id = user.visitor_id if user.is_public else None
+    tenant_id = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else None)
     client = get_yfw_client(
         settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
         user_email=None if user.is_public else user.email,
+        visitor_id=visitor_id,
+        tenant_id=tenant_id,
     )
     try:
         yfw_resp = await client.get_job_status(job_id)
@@ -376,11 +384,15 @@ async def download_job_csv(
     Download the extracted transactions for a completed batch job as a CSV file.
     Jobs that are still in progress return 409.
     """
+    visitor_id = user.visitor_id if user.is_public else None
+    tenant_id = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else None)
     client = get_yfw_client(
         settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
         user_email=None if user.is_public else user.email,
+        visitor_id=visitor_id,
+        tenant_id=tenant_id,
     )
     try:
         yfw_resp = await client.get_job_status(job_id)
@@ -427,11 +439,15 @@ async def merge_jobs_csv(
     if len(payload.job_ids) > 20:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Cannot merge more than 20 jobs at once.")
 
+    visitor_id = user.visitor_id if user.is_public else None
+    tenant_id = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else None)
     client = get_yfw_client(
         settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
         user_email=None if user.is_public else user.email,
+        visitor_id=visitor_id,
+        tenant_id=tenant_id,
     )
 
     all_transactions: list[dict] = []
