@@ -228,8 +228,8 @@ async def list_batch_jobs(
     """
     Return the authenticated user's batch job history from the YFW server.
 
-    Public visitors have no server-side identity, so an empty list is returned —
-    their history is managed client-side via localStorage.
+    Public visitors have no persistent server-side identity, so an empty list is
+    returned — their history is held in in-memory React state for the session.
     """
     if user.is_public:
         return {"jobs": [], "total": 0}

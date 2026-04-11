@@ -91,8 +91,19 @@ async def get_current_user(
     provided_key = api_key_header or (bearer.credentials if bearer else None)
     if provided_key and provided_key == local_key:
         return PluginUser(email="admin@standalone")
-        
-    # If we got here and it wasn't a valid API key, it's truly unauthorized.
+
+    # Allow public visitors in standalone mode too — browsers without the API
+    # key stored in localStorage send X-Public-Visitor-Id headers instead.
+    visitor_id = request.headers.get("X-Public-Visitor-Id")
+    visitor_tenant_id = request.headers.get("X-Public-Tenant-Id")
+    if visitor_id and visitor_tenant_id:
+        return PluginUser(
+            email=f"public:{visitor_id}",
+            is_public=True,
+            visitor_id=visitor_id,
+            visitor_tenant_id=visitor_tenant_id,
+        )
+
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid API key.",
