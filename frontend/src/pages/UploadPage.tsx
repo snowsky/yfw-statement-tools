@@ -254,7 +254,7 @@ export default function UploadPage() {
     setError('')
     try {
       const res = await statementsApi.upload(files)
-      const token = res.download_url.split('/').pop() ?? ''
+      const token = new URL(res.download_url, window.location.origin).pathname.split('/').filter(Boolean).pop() ?? ''
       setShareLink(shareUrl(token))
       
       // Track usage in the host application
@@ -457,9 +457,9 @@ export default function UploadPage() {
                 onClick={handleGetShareLink}
                 disabled={!canSubmit || generatingLink}
                 style={canSubmit && !generatingLink ? btnOutline : btnDisabled}
-                title="Generate a shareable download link (sync upload)"
+                title="Upload files and get a shareable download link"
               >
-                {generatingLink ? 'Generating...' : '🔗 Get shareable link'}
+                {generatingLink ? 'Uploading...' : '🔗 Upload & Get Link'}
               </button>
             )}
             {files.length > 0 && (
