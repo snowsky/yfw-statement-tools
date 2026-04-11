@@ -54,7 +54,19 @@ export default function UploadPage() {
   const [downloadingJobId, setDownloadingJobId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const isPublic = !localStorage.getItem('token') && !localStorage.getItem('statement_tools_api_key')
+  // Reactive auth flag — re-evaluated when the sidecar receives a token via
+  // postMessage (App.tsx dispatches a 'storage' event after storing it).
+  const [isPublic, setIsPublic] = useState(
+    () => !localStorage.getItem('token') && !localStorage.getItem('statement_tools_api_key')
+  )
+
+  useEffect(() => {
+    const onStorage = () => {
+      setIsPublic(!localStorage.getItem('token') && !localStorage.getItem('statement_tools_api_key'))
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
 
   /**
    * Load job history and refresh any stale in-progress statuses.
@@ -104,10 +116,11 @@ export default function UploadPage() {
     setJobHistory(jobs)
   }
 
-  // Load history on mount
+  // Load history on mount and whenever auth state changes (e.g. token arrives
+  // via postMessage in sidecar mode — isPublic flips false → fetch from server)
   useEffect(() => {
     refreshHistory()
-  }, [])
+  }, [isPublic])
 
   // Initial quota check for public users
   useEffect(() => {
