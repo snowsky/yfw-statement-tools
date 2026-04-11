@@ -149,7 +149,11 @@ class YFWClient:
         if resp.is_success:
             return
         if resp.status_code == 401:
-            raise PermissionError("Invalid API key.")
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except Exception:
+                detail = resp.text
+            raise PermissionError(f"YFW authentication failed: {detail}")
         if resp.status_code == 402:
             raise PermissionError(
                 "Statement processing is not enabled on your YFW license."
