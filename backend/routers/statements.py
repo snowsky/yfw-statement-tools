@@ -117,7 +117,7 @@ async def upload_statements(
         settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
-        user_email=user.email,
+        user_email=None if user.is_public else user.email,
     )
     all_transactions: list[dict] = []
     errors: list[str] = []
@@ -241,7 +241,7 @@ async def upload_batch(
         settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
-        user_email=user.email,
+        user_email=None if user.is_public else user.email,
     )
     file_tuples: list[tuple[str, bytes, str]] = []
 
@@ -289,10 +289,10 @@ async def get_batch_job_status(
 ):
     """Get the status and results of a batch processing job."""
     client = get_yfw_client(
-        settings.yfw_api_url, 
+        settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
-        user_email=user.email
+        user_email=None if user.is_public else user.email,
     )
     try:
         yfw_resp = await client.get_job_status(job_id)
@@ -349,7 +349,7 @@ async def download_job_csv(
         settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
-        user_email=user.email,
+        user_email=None if user.is_public else user.email,
     )
     try:
         yfw_resp = await client.get_job_status(job_id)
@@ -400,7 +400,7 @@ async def merge_jobs_csv(
         settings.yfw_api_url,
         settings.yfw_api_key,
         secret_key=settings.yfw_secret_key,
-        user_email=user.email,
+        user_email=None if user.is_public else user.email,
     )
 
     all_transactions: list[dict] = []
