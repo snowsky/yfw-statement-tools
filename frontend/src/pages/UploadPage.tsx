@@ -4,7 +4,6 @@ import { statementsApi } from '@/api/statements'
 import { apiRequest } from '@/lib/api/_base'
 import { getVisitorId, getPublicTenantId } from '@/lib/visitor'
 import { recordPublicUsage } from '@/lib/publicUsage'
-import { loadJobs, saveJob, updateJobStatus, removeJob } from '@/lib/jobHistory'
 import type { BatchFileStatus, BatchJobStatus, SavedJob } from '@/types'
 
 const isSidecar = import.meta.env.VITE_MODE === 'sidecar'
@@ -69,51 +68,26 @@ export default function UploadPage() {
   }, [])
 
   /**
-   * Load job history and refresh any stale in-progress statuses.
-   *
-   * Authenticated users: server is source of truth (works across browsers/devices).
-   * Public visitors:     localStorage only (no server-side per-visitor identity).
-   *
-   * In both cases we enrich with locally cached file names so the "N files —
-   * name1, name2" line still shows when the history was seeded on this browser.
+   * Load job history from the server for authenticated users.
+   * Public visitors keep history in-memory only (no-op here — jobs are added
+   * to state directly after upload and cleared when the page is closed).
    */
   async function refreshHistory() {
-    let jobs: SavedJob[]
+    if (isPublic) return
 
-    if (isPublic) {
-      jobs = loadJobs()
-    } else {
-      try {
-        const resp = await statementsApi.listJobs()
-        const serverJobs = resp.jobs ?? []
-        // Enrich with file names from local cache (server list doesn't include them)
-        const localMap = new Map(loadJobs().map(j => [j.job_id, j]))
-        jobs = serverJobs.map(j => ({
-          job_id: j.job_id,
-          created_at: j.created_at,
-          total_files: j.total_files,
-          file_names: localMap.get(j.job_id)?.file_names ?? [],
-          status: j.status,
-        }))
-      } catch {
-        // Fall back to localStorage if server is unreachable
-        jobs = loadJobs()
-      }
+    try {
+      const resp = await statementsApi.listJobs()
+      const jobs: SavedJob[] = (resp.jobs ?? []).map(j => ({
+        job_id: j.job_id,
+        created_at: j.created_at,
+        total_files: j.total_files,
+        file_names: j.file_names ?? [],
+        status: j.status,
+      }))
+      setJobHistory(jobs)
+    } catch {
+      // Server unreachable — leave existing state intact
     }
-
-    // Refresh any stale in-progress statuses once
-    const stale = jobs.filter(j => j.status === 'pending' || j.status === 'processing')
-    for (const job of stale) {
-      try {
-        const s = await statementsApi.getJobStatus(job.job_id)
-        updateJobStatus(job.job_id, s.status)
-        job.status = s.status
-      } catch {
-        // Job may no longer exist upstream — leave status as-is
-      }
-    }
-
-    setJobHistory(jobs)
   }
 
   // Load history on mount and whenever auth state changes (e.g. token arrives
@@ -181,7 +155,7 @@ export default function UploadPage() {
             status.status === 'partial_failure'
           ) {
             window.clearInterval(interval)
-            updateJobStatus(activeJobId, status.status)
+            setJobHistory(prev => prev.map(j => j.job_id === activeJobId ? { ...j, status: status.status } : j))
             refreshHistory()
           }
         } catch (e) {
@@ -254,7 +228,7 @@ export default function UploadPage() {
         file_names: files.map((f: File) => f.name),
         status: res.status,
       }
-      saveJob(newJob)
+      setJobHistory(prev => [newJob, ...prev.filter(j => j.job_id !== newJob.job_id)])
       setFiles([])
       refreshHistory()
       
@@ -353,9 +327,6 @@ export default function UploadPage() {
   }
 
   function handleRemoveJob(jobId: string) {
-    // Always purge from localStorage (no-op if not there)
-    removeJob(jobId)
-    // Remove from local state immediately without a server round-trip
     setJobHistory(prev => prev.filter(j => j.job_id !== jobId))
     setSelectedForMerge(prev => {
       const next = new Set(prev)
