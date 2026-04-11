@@ -1,6 +1,6 @@
 import logging
 import httpx
-from typing import Any
+from typing import Any, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class YFWClient:
     """Async HTTP client for YFW statement processing API."""
 
-    def __init__(self, yfw_url: str, api_key: str, secret_key: str = "", user_email: str = ""):
+    def __init__(self, yfw_url: str, api_key: str, secret_key: str = "", user_email: str = "", plugin_id: str = "statement-tools"):
         # Normalize URL: remove trailing slashes and redundant /api/v1
         base = yfw_url.rstrip("/")
         if base.endswith("/api/v1"):
@@ -18,13 +18,14 @@ class YFWClient:
         self._api_key = api_key
         self._secret_key = secret_key
         self._user_email = user_email
+        self._plugin_id = plugin_id
 
-    def _headers(self, visitor_id: str = "", tenant_id: str = "") -> dict[str, str]:
+    def _headers(self, visitor_id: Optional[str] = None, tenant_id: Optional[str] = None) -> dict[str, str]:
         headers = {}
         # Prioritize secret key (Sidecar mode) over API key (Standalone mode)
         if self._secret_key:
             headers["X-Internal-Secret"] = self._secret_key
-            headers["X-Plugin-Id"] = "statement-tools"
+            headers["X-Plugin-Id"] = self._plugin_id
             if visitor_id:
                 headers["X-Public-Visitor-Id"] = visitor_id
                 if tenant_id:
@@ -44,8 +45,8 @@ class YFWClient:
         file_content: bytes,
         filename: str,
         content_type: str = "application/pdf",
-        visitor_id: str = "",
-        tenant_id: str = "",
+        visitor_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """
         Send a single file to YFW for AI-powered parsing.
@@ -81,8 +82,8 @@ class YFWClient:
         self,
         files: list[tuple[str, bytes, str]],
         document_type: str = "statement",
-        visitor_id: str = "",
-        tenant_id: str = "",
+        visitor_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Upload multiple files for asynchronous batch processing."""
         async with httpx.AsyncClient(timeout=120.0) as client:

@@ -1,11 +1,12 @@
 """
 YFW client factory.
 
-Sidecar mode (YFW_SECRET_KEY is set): use InternalYFWClient, which calls
+Sidecar mode (YFW_INTERNAL_MODE=true): use InternalYFWClient, which calls
 core services directly via Python imports — no HTTP round-trip needed.
 
-Standalone mode: use YFWClient, which forwards files to a YFW instance
-over HTTP using YFW_API_URL / YFW_API_KEY.
+Default / standalone mode: use YFWClient, which forwards files to a YFW
+instance over HTTP. In sidecar deployments this uses X-Internal-Secret;
+in standalone deployments it uses X-API-Key.
 """
 from __future__ import annotations
 

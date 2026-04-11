@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     # Standalone mode: connect to a YFW instance via HTTP
     yfw_api_url: str = "http://api:8000"
     yfw_api_key: str = ""
-    yfw_secret_key: str = "your-super-secret-key-here-change-this-in-production" # Shared secret for internal trust
+    yfw_secret_key: str = ""  # Must be set via YFW_SECRET_KEY env var in sidecar deployments
 
     # Standalone mode: protect this service's own API
     # Leave blank for open dev access.

@@ -12,12 +12,12 @@ export function App() {
       // 1. Signal that we are ready
       window.parent.postMessage({ type: 'PLUGIN_READY' }, '*')
 
-      // 2. Listen for the token
+      // 2. Listen for the token — only accept messages from the direct parent frame
       const handleMessage = (event: MessageEvent) => {
+        if (event.source !== window.parent) return;
         if (event.data?.type === 'AUTH_TOKEN' && event.data.token) {
           localStorage.setItem('token', event.data.token)
-          // Optionally trigger a fresh fetch of data if needed
-          window.dispatchEvent(new Event('storage')) 
+          window.dispatchEvent(new Event('storage'))
         }
       }
       window.addEventListener('message', handleMessage)

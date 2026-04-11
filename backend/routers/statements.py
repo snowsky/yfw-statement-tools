@@ -120,8 +120,8 @@ async def upload_statements(
     all_transactions: list[dict] = []
     errors: list[str] = []
 
-    visitor_id = user.visitor_id if user.is_public else ""
-    tenant_id = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else "")
+    visitor_id = user.visitor_id if user.is_public else None
+    tenant_id = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else None)
 
     for upload in files:
         name = upload.filename or "unknown"
@@ -243,8 +243,8 @@ async def upload_batch(
     )
     file_tuples: list[tuple[str, bytes, str]] = []
 
-    visitor_id = user.visitor_id if user.is_public else ""
-    visitor_tenant = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else "")
+    visitor_id = user.visitor_id if user.is_public else None
+    visitor_tenant = user.visitor_tenant_id if user.is_public else (str(user.tenant_id) if user.tenant_id else None)
 
     for upload in files:
         content = await upload.read()
