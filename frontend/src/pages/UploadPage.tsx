@@ -4,7 +4,8 @@ import { statementsApi } from '@/api/statements'
 import { apiRequest } from '@/lib/api/_base'
 import { getVisitorId, getPublicTenantId } from '@/lib/visitor'
 import { recordPublicUsage } from '@/lib/publicUsage'
-import type { BatchFileStatus, BatchJobStatus } from '@/types'
+import { loadJobs, saveJob, updateJobStatus, removeJob } from '@/lib/jobHistory'
+import type { BatchFileStatus, BatchJobStatus, SavedJob } from '@/types'
 
 const isSidecar = import.meta.env.VITE_MODE === 'sidecar'
 
@@ -47,9 +48,18 @@ export default function UploadPage() {
   const [error, setError] = useState('')
   const [quota, setQuota] = useState<{ remaining: number; daily_limit: number } | null>(null)
   const [showPaywall, setShowPaywall] = useState(false)
+  const [jobHistory, setJobHistory] = useState<SavedJob[]>([])
+  const [selectedForMerge, setSelectedForMerge] = useState<Set<string>>(new Set())
+  const [merging, setMerging] = useState(false)
+  const [downloadingJobId, setDownloadingJobId] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const isPublic = !localStorage.getItem('token') && !localStorage.getItem('statement_tools_api_key')
+
+  // Load job history from localStorage on mount
+  useEffect(() => {
+    setJobHistory(loadJobs())
+  }, [])
 
   // Initial quota check for public users
   useEffect(() => {
@@ -110,6 +120,8 @@ export default function UploadPage() {
             status.status === 'partial_failure'
           ) {
             window.clearInterval(interval)
+            updateJobStatus(activeJobId, status.status)
+            setJobHistory(loadJobs())
           }
         } catch (e) {
           console.error('Polling error:', e)
@@ -174,6 +186,15 @@ export default function UploadPage() {
         progress_percentage: 0,
         files: [],
       })
+      const newJob: SavedJob = {
+        job_id: res.job_id,
+        created_at: new Date().toISOString(),
+        total_files: files.length,
+        file_names: files.map((f: File) => f.name),
+        status: res.status,
+      }
+      saveJob(newJob)
+      setJobHistory(loadJobs())
       setFiles([])
       
       // Track usage in the host application
@@ -221,6 +242,63 @@ export default function UploadPage() {
     await navigator.clipboard.writeText(shareLink)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
+  }
+
+  function triggerBlobDownload(blob: Blob, filename: string) {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleDownloadJobCsv(jobId: string) {
+    setDownloadingJobId(jobId)
+    setError('')
+    try {
+      const blob = await statementsApi.downloadJobCsv(jobId)
+      triggerBlobDownload(blob, `statements-job-${jobId.slice(0, 8)}.csv`)
+    } catch (e: any) {
+      setError(e.message || 'Download failed.')
+    } finally {
+      setDownloadingJobId(null)
+    }
+  }
+
+  async function handleMergeSelected() {
+    if (selectedForMerge.size < 2) return
+    setMerging(true)
+    setError('')
+    try {
+      const blob = await statementsApi.mergeJobsCsv([...selectedForMerge])
+      const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')
+      triggerBlobDownload(blob, `statements-merged-${ts}.csv`)
+      setSelectedForMerge(new Set())
+    } catch (e: any) {
+      setError(e.message || 'Merge failed.')
+    } finally {
+      setMerging(false)
+    }
+  }
+
+  function toggleMergeSelection(jobId: string) {
+    setSelectedForMerge(prev => {
+      const next = new Set(prev)
+      if (next.has(jobId)) next.delete(jobId)
+      else next.add(jobId)
+      return next
+    })
+  }
+
+  function handleRemoveJob(jobId: string) {
+    removeJob(jobId)
+    setJobHistory(loadJobs())
+    setSelectedForMerge(prev => {
+      const next = new Set(prev)
+      next.delete(jobId)
+      return next
+    })
   }
 
   const canSubmit = files.length > 0 && !uploading && !activeJobId
@@ -390,6 +468,97 @@ export default function UploadPage() {
 
       {error && <div style={errorBox}>{error}</div>}
 
+      {/* Job History */}
+      {jobHistory.length > 0 && (
+        <div style={historyContainerStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <span style={{ fontWeight: 700, fontSize: 15 }}>
+              Job History <span style={{ fontWeight: 400, color: '#6b7280', fontSize: 13 }}>({jobHistory.length})</span>
+            </span>
+            {selectedForMerge.size >= 2 && (
+              <button
+                onClick={handleMergeSelected}
+                disabled={merging}
+                style={merging ? btnDisabled : btnPrimary}
+              >
+                {merging ? 'Merging…' : `⬇ Merge ${selectedForMerge.size} jobs`}
+              </button>
+            )}
+          </div>
+
+          <div style={{ fontSize: 11, color: '#9ca3af', marginBottom: 8 }}>
+            Select 2+ completed jobs to merge into a single CSV.
+          </div>
+
+          {jobHistory.map((job: SavedJob) => {
+            const isDone = job.status === 'completed' || job.status === 'partial_failure'
+            const isFailed = job.status === 'failed'
+            const isChecked = selectedForMerge.has(job.job_id)
+            const isDownloading = downloadingJobId === job.job_id
+            const date = new Date(job.created_at).toLocaleString(undefined, {
+              month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+            })
+
+            return (
+              <div key={job.job_id} style={{ ...historyRowStyle, background: isChecked ? '#eff6ff' : '#fff' }}>
+                <input
+                  type="checkbox"
+                  disabled={!isDone}
+                  checked={isChecked}
+                  onChange={() => toggleMergeSelection(job.job_id)}
+                  style={{ marginRight: 10, cursor: isDone ? 'pointer' : 'default', accentColor: '#2563eb' }}
+                />
+
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#374151' }}>
+                      {job.job_id.slice(0, 8)}…
+                    </span>
+                    <span style={{
+                      fontSize: 11,
+                      padding: '1px 7px',
+                      borderRadius: 10,
+                      fontWeight: 600,
+                      background: isFailed ? '#fee2e2' : isDone ? '#dcfce7' : '#fef9c3',
+                      color: isFailed ? '#991b1b' : isDone ? '#166534' : '#854d0e',
+                    }}>
+                      {job.status.toUpperCase()}
+                    </span>
+                    <span style={{ fontSize: 12, color: '#9ca3af' }}>{date}</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3 }}>
+                    {job.total_files} file{job.total_files !== 1 ? 's' : ''}
+                    {job.file_names.length > 0 && (
+                      <span> — {job.file_names.slice(0, 2).join(', ')}{job.file_names.length > 2 ? ` +${job.file_names.length - 2} more` : ''}</span>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: 6, marginLeft: 8, flexShrink: 0 }}>
+                  {isDone && (
+                    <button
+                      onClick={() => handleDownloadJobCsv(job.job_id)}
+                      disabled={isDownloading}
+                      style={isDownloading ? { ...btnOutline, fontSize: 12, padding: '5px 10px', cursor: 'not-allowed', opacity: 0.6 } : { ...btnOutline, fontSize: 12, padding: '5px 10px' }}
+                      title="Download this job's transactions as CSV"
+                    >
+                      {isDownloading ? '…' : '⬇ CSV'}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => handleRemoveJob(job.job_id)}
+                    style={{ ...removeBtnStyle, fontSize: 12, padding: '4px 6px' }}
+                    title="Remove from history"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
       {/* Paywall Modal - only show if not in sidecar mode (host app handles its own paywall) */}
       {showPaywall && !isSidecar && (
         <div style={modalOverlay}>
@@ -459,4 +628,13 @@ const modalOverlay: CSSProperties = {
 const modalContent: CSSProperties = {
   background: '#fff', padding: 40, borderRadius: 24, maxWidth: 440, width: '90%',
   textAlign: 'center', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+}
+
+const historyContainerStyle: CSSProperties = {
+  marginTop: 28, borderTop: '1px solid #e5e7eb', paddingTop: 20,
+}
+const historyRowStyle: CSSProperties = {
+  display: 'flex', alignItems: 'center', padding: '10px 12px',
+  border: '1px solid #e5e7eb', borderRadius: 8, marginBottom: 8,
+  transition: 'background 0.15s',
 }

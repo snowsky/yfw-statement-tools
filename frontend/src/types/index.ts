@@ -34,3 +34,11 @@ export interface BatchJobStatus {
   files: BatchFileStatus[];
   completed_at?: string;
 }
+
+export interface SavedJob {
+  job_id: string;
+  created_at: string; // ISO string
+  total_files: number;
+  file_names: string[];
+  status: string;
+}

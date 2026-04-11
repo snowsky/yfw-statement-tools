@@ -2,10 +2,12 @@
 Statement-tools router — upload portal.
 
 Endpoints:
-  POST /statements/upload          → forward files to YFW, return merged CSV download link
-  GET  /statements/download/{token} → serve a previously generated CSV (public, no auth)
-  POST /batch/upload               → async batch upload, returns job ID
-  GET  /batch/jobs/{job_id}        → poll batch job status
+  POST /statements/upload            → forward files to YFW, return merged CSV download link
+  GET  /statements/download/{token}  → serve a previously generated CSV (public, no auth)
+  POST /batch/upload                 → async batch upload, returns job ID
+  GET  /batch/jobs/{job_id}          → poll batch job status
+  GET  /batch/jobs/{job_id}/csv      → download a completed job's transactions as CSV
+  POST /batch/merge-csv              → merge multiple jobs into a single CSV download
 """
 from __future__ import annotations
 
@@ -17,11 +19,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from auth import PluginUser, get_current_user
 from config import Settings, get_settings
-from schemas import BatchJobStatus, BatchUploadResponse, UploadResponse
+from schemas import BatchJobStatus, BatchUploadResponse, MergeRequest, UploadResponse
 from services import get_yfw_client
 
 logger = logging.getLogger(__name__)
@@ -312,3 +314,131 @@ async def get_batch_job_status(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(exc),
         ) from exc
+
+
+def _extract_job_transactions(yfw_resp: dict) -> list[dict]:
+    """Pull all transactions out of the completed files in a job response."""
+    all_transactions: list[dict] = []
+    for file in yfw_resp.get("files", []):
+        if file.get("status") != "completed":
+            continue
+        extracted = file.get("extracted_data") or {}
+        if isinstance(extracted, list):
+            transactions = extracted
+        else:
+            transactions = extracted.get("transactions", [])
+        if not isinstance(transactions, list):
+            continue
+        for t in transactions:
+            t.setdefault("source_file", file.get("filename", ""))
+        all_transactions.extend(transactions)
+    return all_transactions
+
+
+@router.get("/batch/jobs/{job_id}/csv")
+async def download_job_csv(
+    job_id: str,
+    user: PluginUser = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    """
+    Download the extracted transactions for a completed batch job as a CSV file.
+    Jobs that are still in progress return 409.
+    """
+    client = get_yfw_client(
+        settings.yfw_api_url,
+        settings.yfw_api_key,
+        secret_key=settings.yfw_secret_key,
+        user_email=user.email,
+    )
+    try:
+        yfw_resp = await client.get_job_status(job_id)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
+
+    job_status = yfw_resp.get("status", "unknown")
+    if job_status in ("pending", "processing"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job is still {job_status}. Wait for it to complete before downloading.",
+        )
+
+    transactions = _extract_job_transactions(yfw_resp)
+    if not transactions:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No transactions found in this job.",
+        )
+
+    transactions.sort(key=lambda r: str(r.get("date") or ""))
+    csv_bytes = _build_csv(transactions)
+    short_id = job_id[:8]
+    filename = f"statements-job-{short_id}.csv"
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/batch/merge-csv")
+async def merge_jobs_csv(
+    payload: MergeRequest,
+    user: PluginUser = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+):
+    """
+    Merge the transactions from multiple completed batch jobs into a single CSV.
+    Each row gets a 'source_file' column; jobs with no completed files are skipped.
+    """
+    if not payload.job_ids:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No job IDs provided.")
+    if len(payload.job_ids) > 20:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Cannot merge more than 20 jobs at once.")
+
+    client = get_yfw_client(
+        settings.yfw_api_url,
+        settings.yfw_api_key,
+        secret_key=settings.yfw_secret_key,
+        user_email=user.email,
+    )
+
+    all_transactions: list[dict] = []
+    errors: list[str] = []
+
+    for jid in payload.job_ids:
+        try:
+            yfw_resp = await client.get_job_status(jid)
+        except Exception as exc:
+            errors.append(f"Job {jid[:8]}: {exc}")
+            continue
+        transactions = _extract_job_transactions(yfw_resp)
+        # Tag each transaction with its originating job for traceability
+        for t in transactions:
+            t["job_id"] = jid[:8]
+        all_transactions.extend(transactions)
+
+    if not all_transactions:
+        detail = "No transactions found across the selected jobs."
+        if errors:
+            detail += " Errors: " + "; ".join(errors)
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=detail)
+
+    all_transactions.sort(key=lambda r: str(r.get("date") or ""))
+
+    # Build CSV with an extra job_id column for merged files
+    output = io.StringIO()
+    fieldnames = ["date", "description", "amount", "transaction_type", "category", "balance", "source_file", "job_id"]
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(all_transactions)
+    csv_bytes = output.getvalue().encode("utf-8")
+
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    filename = f"statements-merged-{ts}.csv"
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

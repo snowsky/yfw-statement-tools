@@ -65,3 +65,37 @@ export async function apiRequest<T = unknown>(
 
   return response.json() as Promise<T>
 }
+
+/**
+ * Like apiRequest but returns the raw Response Blob (for file downloads).
+ * Throws on non-2xx responses with the same error format as apiRequest.
+ */
+export async function apiBlobRequest(path: string, init: RequestInit = {}): Promise<Blob> {
+  const token = localStorage.getItem('token')
+  const apiKey = localStorage.getItem('statement_tools_api_key')
+
+  const headers: Record<string, string> = {
+    ...(init.headers as Record<string, string>),
+  }
+
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  } else if (apiKey) {
+    headers['X-API-Key'] = apiKey
+  }
+
+  const response = await fetch(`${BASE}${path}`, { ...init, headers })
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => response.statusText)
+    let detail = text
+    try {
+      detail = JSON.parse(text)?.detail ?? text
+    } catch {
+      // use raw text
+    }
+    throw new Error(detail || `HTTP ${response.status}`)
+  }
+
+  return response.blob()
+}

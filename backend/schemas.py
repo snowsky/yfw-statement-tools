@@ -44,3 +44,7 @@ class BatchJobStatus(BaseModel):
     progress_percentage: float
     files: list[BatchFileStatus] = []
     completed_at: Optional[datetime] = None
+
+
+class MergeRequest(BaseModel):
+    job_ids: list[str]

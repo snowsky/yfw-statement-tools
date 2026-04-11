@@ -46,9 +46,19 @@
       "path": "/api/v1/statement-tools/batch/jobs/{job_id}",
       "methods": ["GET"],
       "description": "Poll batch job status"
+    },
+    {
+      "path": "/api/v1/statement-tools/batch/jobs/{job_id}/csv",
+      "methods": ["GET"],
+      "description": "Download a completed job's transactions as CSV"
+    },
+    {
+      "path": "/api/v1/statement-tools/batch/merge-csv",
+      "methods": ["POST"],
+      "description": "Merge transactions from multiple completed jobs into a single CSV"
     }
   ],
-  "features": ["upload_portal", "batch-processing"],
+  "features": ["upload_portal", "batch-processing", "job-history"],
   "public_page": {
     "path": "/p/statement-tools",
     "label": "Statement Portal",

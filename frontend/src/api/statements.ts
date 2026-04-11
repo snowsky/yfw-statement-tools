@@ -1,4 +1,4 @@
-import { apiRequest } from '@/lib/api/_base'
+import { apiRequest, apiBlobRequest } from '@/lib/api/_base'
 import type { BatchJobStatus, BatchUploadResponse, UploadResponse } from '@/types'
 
 const PREFIX = '/statement-tools'
@@ -37,4 +37,16 @@ export const statementsApi = {
   /** Build the public download URL for a token. */
   downloadUrl: (token: string): string =>
     `/api/v1${PREFIX}/statements/download/${token}`,
+
+  /** Download a completed batch job's transactions as a CSV Blob. */
+  downloadJobCsv: (jobId: string): Promise<Blob> =>
+    apiBlobRequest(`${PREFIX}/batch/jobs/${jobId}/csv`),
+
+  /** Merge transactions from multiple jobs into a single CSV Blob. */
+  mergeJobsCsv: (jobIds: string[]): Promise<Blob> =>
+    apiBlobRequest(`${PREFIX}/batch/merge-csv`, {
+      method: 'POST',
+      body: JSON.stringify({ job_ids: jobIds }),
+      headers: { 'Content-Type': 'application/json' },
+    }),
 }
