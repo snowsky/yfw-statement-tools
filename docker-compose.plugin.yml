@@ -1,0 +1,53 @@
+# Sidecar plugin mode — attach Statement Tools to a running YFW main app.
+#
+# Usage (run from the invoice_app/ directory):
+#   docker-compose -f docker-compose.yml \
+#                  -f yfw-statement-tools/docker-compose.plugin.yml up
+#
+# NOTE: build.context paths are relative to invoice_app/ (the first -f file's
+# directory), not to this file's location. Do NOT run this file standalone.
+#
+# Required env vars (add to invoice_app/.env):
+#   SECRET_KEY   — already set in main app; forwarded as YFW_SECRET_KEY
+#
+# The main app's nginx routes /api/v1/statement-tools/* to plugin_statement_tools:8000.
+# See: infra/docker/nginx.conf (add the location block documented in README).
+
+services:
+  plugin_statement_tools:
+    build:
+      context: ./yfw-statement-tools
+      dockerfile: backend/Dockerfile
+    container_name: plugin_statement_tools
+    restart: unless-stopped
+    environment:
+      YFW_SECRET_KEY: ${SECRET_KEY}            # shared with main app for JWT validation
+      STATEMENT_TOOLS_API_KEY: ""              # empty = JWT mode only
+      DOWNLOAD_EXPIRY_MINUTES: ${DOWNLOAD_EXPIRY_MINUTES:-60}
+    networks:
+      - invoice_app_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  plugin_statement_tools_ui:
+    build:
+      context: ./yfw-statement-tools/frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_MODE: sidecar
+    container_name: plugin_statement_tools_ui
+    restart: unless-stopped
+    environment:
+      BACKEND_HOST: plugin_statement_tools
+    networks:
+      - invoice_app_network
+
+networks:
+  invoice_app_network:
+    # When merged with the main docker-compose.yml via -f, Docker Compose reuses
+    # the main app's invoice_app_network.
+    # When run standalone for testing, a local network is created automatically.
+    driver: bridge

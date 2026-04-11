@@ -1,0 +1,29 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: statement_tools_backend
+    restart: unless-stopped
+    environment:
+      YFW_API_URL: ${YFW_API_URL:-http://localhost:8000}
+      YFW_API_KEY: ${YFW_API_KEY:-}
+      STATEMENT_TOOLS_API_KEY: ${STATEMENT_TOOLS_API_KEY:-}
+      DOWNLOAD_EXPIRY_MINUTES: ${DOWNLOAD_EXPIRY_MINUTES:-60}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: statement_tools_frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
