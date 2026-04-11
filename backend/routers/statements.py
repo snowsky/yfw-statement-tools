@@ -122,6 +122,7 @@ async def upload_statements(
         user_email=None if user.is_public else user.email,
         visitor_id=visitor_id,
         tenant_id=tenant_id,
+        per_tenant_user_id=None if user.is_public else user.per_tenant_user_id,
     )
     all_transactions: list[dict] = []
     errors: list[str] = []
@@ -240,6 +241,7 @@ async def list_batch_jobs(
         secret_key=settings.yfw_secret_key,
         user_email=user.email,
         tenant_id=tenant_id,
+        per_tenant_user_id=user.per_tenant_user_id,
     )
     try:
         return await client.list_jobs(limit=min(limit, 100))
@@ -332,6 +334,7 @@ async def get_batch_job_status(
         user_email=None if user.is_public else user.email,
         visitor_id=visitor_id,
         tenant_id=tenant_id,
+        per_tenant_user_id=None if user.is_public else user.per_tenant_user_id,
     )
     try:
         yfw_resp = await client.get_job_status(job_id)
@@ -393,6 +396,7 @@ async def download_job_csv(
         user_email=None if user.is_public else user.email,
         visitor_id=visitor_id,
         tenant_id=tenant_id,
+        per_tenant_user_id=None if user.is_public else user.per_tenant_user_id,
     )
     try:
         yfw_resp = await client.get_job_status(job_id)
@@ -448,6 +452,7 @@ async def merge_jobs_csv(
         user_email=None if user.is_public else user.email,
         visitor_id=visitor_id,
         tenant_id=tenant_id,
+        per_tenant_user_id=None if user.is_public else user.per_tenant_user_id,
     )
 
     all_transactions: list[dict] = []

@@ -20,6 +20,7 @@ def get_yfw_client(
     user_email: str = "",
     visitor_id: str | None = None,
     tenant_id: str | None = None,
+    per_tenant_user_id: int | None = None,
 ):
     """
     Return a YFW client.
@@ -49,4 +50,5 @@ def get_yfw_client(
         user_email=user_email,
         visitor_id=visitor_id,
         tenant_id=tenant_id,
+        per_tenant_user_id=per_tenant_user_id,
     )

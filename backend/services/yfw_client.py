@@ -18,6 +18,7 @@ class YFWClient:
         plugin_id: str = "statement-tools",
         visitor_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
+        per_tenant_user_id: Optional[int] = None,
     ):
         # Normalize URL: remove trailing slashes and redundant /api/v1
         base = yfw_url.rstrip("/")
@@ -32,6 +33,7 @@ class YFWClient:
         # without needing per-call parameters.
         self._visitor_id = visitor_id
         self._tenant_id = tenant_id
+        self._per_tenant_user_id = per_tenant_user_id
 
     def _headers(self, visitor_id: Optional[str] = None, tenant_id: Optional[str] = None) -> dict[str, str]:
         # Per-call params override instance defaults
@@ -53,6 +55,10 @@ class YFWClient:
             # resolve their tenant even from JWTs that predate the tenant_id claim
             if self._user_email:
                 headers["X-Plugin-User-Email"] = self._user_email
+            # Forward per-tenant user ID so YFW can use it directly without a
+            # costly cross-DB email scan (avoids MasterUser.id != TenantUser.id confusion)
+            if self._per_tenant_user_id is not None:
+                headers["X-Plugin-User-Id"] = str(self._per_tenant_user_id)
         elif self._api_key:
             headers["X-API-Key"] = self._api_key
         return headers
